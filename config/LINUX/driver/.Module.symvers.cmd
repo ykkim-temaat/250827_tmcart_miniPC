@@ -1,0 +1,1 @@
+savedcmd_/home/temaat/tmcart/config/LINUX/driver/Module.symvers :=  scripts/mod/modpost -M -m -a      -o /home/temaat/tmcart/config/LINUX/driver/Module.symvers -T /home/temaat/tmcart/config/LINUX/driver/modules.order -i Module.symvers -e 

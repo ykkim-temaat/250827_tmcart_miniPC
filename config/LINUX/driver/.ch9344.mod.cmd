@@ -1,0 +1,1 @@
+savedcmd_/home/temaat/tmcart/config/LINUX/driver/ch9344.mod := printf '%s\n'   ch9344.o | awk '!x[$$0]++ { print("/home/temaat/tmcart/config/LINUX/driver/"$$0) }' > /home/temaat/tmcart/config/LINUX/driver/ch9344.mod
