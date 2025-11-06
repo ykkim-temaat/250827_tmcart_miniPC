@@ -19,7 +19,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/queue.h" // FreeRTOS 큐 헤더 추가
+#include "freertos/queue.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -30,7 +30,6 @@
 #include <rcl/error_handling.h>
 #include <std_msgs/msg/int32.h>
 #include <std_msgs/msg/float32.h>
-// #include <std_msgs/msg/bool.h>
 #include <geometry_msgs/msg/vector3.h>
 #include <rclc/rclc.h>
 #include <rclc/executor.h>

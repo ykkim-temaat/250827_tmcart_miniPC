@@ -1,0 +1,10 @@
+[Unit]
+Description=Load ch348 driver (Install if missing for current kernel)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ch348-install.sh
+RemainAfterExit=true
+
+[Install]
+WantedBy=multi-user.target
