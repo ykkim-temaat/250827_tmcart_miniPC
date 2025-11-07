@@ -111,6 +111,7 @@ bool g_load1_detected = false;      // Load1 (REAR) 상태 (true: Detected, fals
 bool g_load2_detected = false;      // Load2 (FRONT) 상태 (true: Detected, false: Not Detected)
 bool g_rear_bumper_detected = false;      // REAR_BUMPER 상태 (true: Detected, false: Not Detected)
 bool g_docking_complete = false;      // Docking 상태 (true: Complete, false: Incomplete)
+bool g_clutch_on_state = false;       // Clutch 상태 (true: On, false: Off)
 
 // ===========================================================
 // micro-ROS Publisher related
@@ -141,7 +142,8 @@ std_msgs__msg__Int32 tmcart_status_msg;
  * Bit 9	| (1 << 9) | load2_detected | 적재물2(바깥쪽) 감지
  * Bit 10	| (1 << 10) | rear_bumper_detected | 후면 범퍼 감지
  * Bit 11	| (1 << 11) | docking_complete | 도킹 완료
- * Bit 12-31 	-	예비 (Reserved)	-
+ * Bit 12	| (1 << 12) | clutch_on_state | CLUTCH 풀림 (사람에 의한 제어)
+ * Bit 13-31 	-	예비 (Reserved)	-
 **/
 
 // ===========================================================
@@ -217,6 +219,7 @@ void status_timer_callback(rcl_timer_t *timer, int64_t last_call_time)
         if (g_load2_detected)     { encoded_status |= (1 << 9); }
         if (g_rear_bumper_detected)     { encoded_status |= (1 << 10); }
         if (g_docking_complete)     { encoded_status |= (1 << 11); }
+        if (g_clutch_on_state)      { encoded_status |= (1 << 12); }
 
         // 3. 인코딩된 값을 메시지에 담아 한 번만 발행
         tmcart_status_msg.data = encoded_status;
@@ -354,6 +357,7 @@ void md750t_ctrl_task(void *arg) {
     bool twist_mode = false;
     bool prohibit_twist = false;
     bool charging_dock_mode = false;
+    bool clutch_on_mode = false;
 
     float z_pos_error = 0.0f;
     
@@ -365,6 +369,8 @@ void md750t_ctrl_task(void *arg) {
     unsigned long last_ext_din_time = 0;
     // unsigned long last_guide_laser_time = 0;
     unsigned long last_log_time = 0;
+
+    unsigned long md750t_start_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
     
     RosCommand_t received_cmd; // 큐에서 꺼낸 명령어를 저장할 지역 변수
 
@@ -574,6 +580,17 @@ void md750t_ctrl_task(void *arg) {
                 charging_dock_mode = false;
                 ESP_LOGD(TAG, "Charging Dock Mode OFF ... ");
             }
+            
+            // CLUTCH ON/OFF Command 
+            if (received_cmd.cmd == 0x80 && curr_ros_cmd != 0x80) { 
+                curr_ros_cmd = 0x80;
+                clutch_on_mode = false;
+                ESP_LOGD(TAG, "Clutch OFF (Powered by Motor)... ");
+            } else if (received_cmd.cmd == 0x81 && curr_ros_cmd != 0x81) { 
+                curr_ros_cmd = 0x81;
+                clutch_on_mode = true;
+                ESP_LOGD(TAG, "Clutch ON (Powered by Human)... ");
+            }
         }
         
         // 50ms loop, Read Load Cell Voltages & Update MCP4728 (주행모드)
@@ -682,6 +699,12 @@ void md750t_ctrl_task(void *arg) {
 
             // prohibit twist (GUI에 의한 주행금지 명령)
             if (prohibit_twist == true) { 
+                set_voltage_ch0 = 2.5; 
+                set_voltage_ch1 = 2.5; 
+            }
+
+            // MD750T 스마트핸들(로드셀) 초기값 셋팅 딜레이 (3초이내 핸들 잡지 않을 것, 매뉴얼참조)
+            if (md750t_start_time - current_read_time < 5000) { 
                 set_voltage_ch0 = 2.5; 
                 set_voltage_ch1 = 2.5; 
             }
@@ -872,6 +895,18 @@ void md750t_ctrl_task(void *arg) {
                 input_26 = input_26 | 0x20;   // Set P5 to HIGH (Active LOW)
                 pcf8574_write_byte(PCF8574_ADDR_0x26, input_26); 
                 g_laser_state = false; // 상태 업데이트
+            }
+
+            if (clutch_on_mode == true) {     // Clutch ON (Human Powered)
+                pcf8574_read_byte(PCF8574_ADDR_0x21, &input_21); 
+                input_21 = input_21 & ~0x04;   // Set P2 to LOW (Active LOW)
+                pcf8574_write_byte(PCF8574_ADDR_0x21, input_21);
+                g_clutch_on_state = true; // 상태 업데이트
+            } else {   // Clutch OFF (Motor Powered)
+                pcf8574_read_byte(PCF8574_ADDR_0x21, &input_21); 
+                input_21 = input_21 | 0x04;   // Set P2 to HIGH (Active LOW)
+                pcf8574_write_byte(PCF8574_ADDR_0x21, input_21); 
+                g_clutch_on_state = false; // 상태 업데이트
             }
             
             // MD750T Enable Signal DOUT_10, 0x21, P1 0x02
