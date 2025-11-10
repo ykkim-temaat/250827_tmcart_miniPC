@@ -1,0 +1,6 @@
+[submodule "python"]
+	path = python
+	url = git@github.com:ykkim-temaat/251002_tmcart_minipc_python.git
+[submodule "esp32s3/test_ykk"]
+	path = esp32s3/test_ykk
+	url = git@github.com:ykkim-temaat/250812_tmcart-esp32s3-test_ykk
