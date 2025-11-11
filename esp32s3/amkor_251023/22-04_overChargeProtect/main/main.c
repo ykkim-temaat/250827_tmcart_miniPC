@@ -1012,6 +1012,43 @@ void linear_scale_task(void *arg)
     }
 }
 
+// void hall_sensor_task(void *arg) {
+//     ESP_LOGI(TAG, "hall_sensor_task started. System is in normal operation.");
+//     unsigned long last_x_hall_read_time = 0;
+//     float x_hall_factor = 0.106926; // mm per count
+//     Encoder_Init();
+//     float last_x_pos_mm = 0.0f;
+
+//     while (1) {
+//         unsigned long current_read_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+//         if (current_read_time - last_x_hall_read_time > 100) {
+//             last_x_hall_read_time = current_read_time;
+//             int x_hall_cnt = Encoder_Get_Count_M2();
+//             g_x_pos_mm = (float)x_hall_cnt * x_hall_factor;
+
+//             if (g_x_pos_cmd_status == MOVE_DN) { // Move Backward
+//                 if (last_x_pos_mm - g_x_pos_mm == 0.0f) {
+//                     g_x_pos_mm = 0.0f;
+//                     Encoder_Clear_Count_M2();
+//                     RosCommand_t stop_cmd = {0x30, 0, 0};
+//                     xQueueSendToFront(g_ros_cmd_queue, &stop_cmd, 0);
+//                     ESP_LOGI(TAG, "X-Axis stalled while moving backward. Sending X-Stop.");
+//                 }
+//                 last_x_pos_mm = g_x_pos_mm;
+//             }
+//             if (g_x_pos_cmd_status == MOVE_UP) { // Move Forward
+//                 if (last_x_pos_mm - g_x_pos_mm == 0.0f) {
+//                     RosCommand_t stop_cmd = {0x30, 0, 0};
+//                     xQueueSendToFront(g_ros_cmd_queue, &stop_cmd, 0);
+//                     ESP_LOGI(TAG, "X-Axis stalled while moving forward. Sending X-Stop.");
+//                 }
+//                 last_x_pos_mm = g_x_pos_mm;
+//             }
+//         }
+//         vTaskDelay(pdMS_TO_TICKS(20));
+//     }
+// }
+
 void hall_sensor_task(void *arg) {
     ESP_LOGI(TAG, "hall_sensor_task started. System is in normal operation.");
     unsigned long last_x_hall_read_time = 0;
@@ -1021,8 +1058,9 @@ void hall_sensor_task(void *arg) {
 
     while (1) {
         unsigned long current_read_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
-        if (current_read_time - last_x_hall_read_time > 100) {
+        if (current_read_time - last_x_hall_read_time > 1000) {
             last_x_hall_read_time = current_read_time;
+
             int x_hall_cnt = Encoder_Get_Count_M2();
             g_x_pos_mm = (float)x_hall_cnt * x_hall_factor;
 
@@ -1034,16 +1072,15 @@ void hall_sensor_task(void *arg) {
                     xQueueSendToFront(g_ros_cmd_queue, &stop_cmd, 0);
                     ESP_LOGI(TAG, "X-Axis stalled while moving backward. Sending X-Stop.");
                 }
-                last_x_pos_mm = g_x_pos_mm;
-            }
-            if (g_x_pos_cmd_status == MOVE_UP) { // Move Forward
+            } else if (g_x_pos_cmd_status == MOVE_UP) { // Move Forward
                 if (last_x_pos_mm - g_x_pos_mm == 0.0f) {
                     RosCommand_t stop_cmd = {0x30, 0, 0};
                     xQueueSendToFront(g_ros_cmd_queue, &stop_cmd, 0);
                     ESP_LOGI(TAG, "X-Axis stalled while moving forward. Sending X-Stop.");
                 }
-                last_x_pos_mm = g_x_pos_mm;
             }
+            
+            last_x_pos_mm = g_x_pos_mm;
         }
         vTaskDelay(pdMS_TO_TICKS(20));
     }
