@@ -947,6 +947,8 @@ void md750t_ctrl_task(void *arg) {
             if (g_battery_voltage > 29.2f) {    // 29.2V 이상 과충전 상태
                 ESP_LOGW(TAG, "Battery voltage is over Charging status: %.2f V", g_battery_voltage);
                 over_charge_state_mode = true;
+            } else if (g_battery_voltage < 26.5f) { // 26.5V 이하 정상 상태
+                over_charge_state_mode = false;
             }
         }
 
