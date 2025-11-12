@@ -944,9 +944,11 @@ void md750t_ctrl_task(void *arg) {
             ESP_LOGD(TAG, "Load Cell Voltages - CH0: %.3f V, CH1: %.3f V", read_voltage_ch0, read_voltage_ch1);
             ESP_LOGD(TAG, "Motor Voltages(CH2): %.3f V, Battery Voltage(CH3): %.3f V", g_motor_voltage, g_battery_voltage);
 
-            if (g_battery_voltage > 29.2f) {    // 29.2V 이상 과충전 상태
+            // if (g_battery_voltage > 29.2f) {    // 29.2V 이상 과충전 상태
+            if (g_battery_voltage > 29.0f) {    // 29.0V 이상 과충전 상태로 변경 테스트 (251112)
                 ESP_LOGW(TAG, "Battery voltage is over Charging status: %.2f V", g_battery_voltage);
                 over_charge_state_mode = true;
+                charging_dock_mode = false;
             } else if (g_battery_voltage < 26.5f) { // 26.5V 이하 정상 상태
                 over_charge_state_mode = false;
             }
@@ -1011,43 +1013,6 @@ void linear_scale_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
-
-// void hall_sensor_task(void *arg) {
-//     ESP_LOGI(TAG, "hall_sensor_task started. System is in normal operation.");
-//     unsigned long last_x_hall_read_time = 0;
-//     float x_hall_factor = 0.106926; // mm per count
-//     Encoder_Init();
-//     float last_x_pos_mm = 0.0f;
-
-//     while (1) {
-//         unsigned long current_read_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
-//         if (current_read_time - last_x_hall_read_time > 100) {
-//             last_x_hall_read_time = current_read_time;
-//             int x_hall_cnt = Encoder_Get_Count_M2();
-//             g_x_pos_mm = (float)x_hall_cnt * x_hall_factor;
-
-//             if (g_x_pos_cmd_status == MOVE_DN) { // Move Backward
-//                 if (last_x_pos_mm - g_x_pos_mm == 0.0f) {
-//                     g_x_pos_mm = 0.0f;
-//                     Encoder_Clear_Count_M2();
-//                     RosCommand_t stop_cmd = {0x30, 0, 0};
-//                     xQueueSendToFront(g_ros_cmd_queue, &stop_cmd, 0);
-//                     ESP_LOGI(TAG, "X-Axis stalled while moving backward. Sending X-Stop.");
-//                 }
-//                 last_x_pos_mm = g_x_pos_mm;
-//             }
-//             if (g_x_pos_cmd_status == MOVE_UP) { // Move Forward
-//                 if (last_x_pos_mm - g_x_pos_mm == 0.0f) {
-//                     RosCommand_t stop_cmd = {0x30, 0, 0};
-//                     xQueueSendToFront(g_ros_cmd_queue, &stop_cmd, 0);
-//                     ESP_LOGI(TAG, "X-Axis stalled while moving forward. Sending X-Stop.");
-//                 }
-//                 last_x_pos_mm = g_x_pos_mm;
-//             }
-//         }
-//         vTaskDelay(pdMS_TO_TICKS(20));
-//     }
-// }
 
 void hall_sensor_task(void *arg) {
     ESP_LOGI(TAG, "hall_sensor_task started. System is in normal operation.");
