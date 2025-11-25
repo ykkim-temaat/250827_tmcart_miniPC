@@ -1,3 +1,4 @@
 {
-  "idf.pythonInstallPath": "/usr/bin/python3"
+  "idf.pythonInstallPath": "/usr/bin/python3",
+  "cmake.sourceDirectory": "/home/temaat/tmcart/esp32s3/amkor_251023/21-09_docking_sensor"
 }
