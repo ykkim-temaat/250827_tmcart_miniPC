@@ -793,7 +793,8 @@ void md750t_ctrl_task(void *arg) {
                     L298N_PWM_Set_Speed_M1(50); 
                 } else if (z_pos_error > -10.0f && z_pos_error <= -5.0f) { 
                     L298N_PWM_Set_Speed_M1(50); 
-                } else if (z_pos_error >= 0.0f) {
+                // } else if (z_pos_error >= 0.0f) {
+                } else if (z_pos_error >= -1.5f) {
                     L298N_PWM_Set_Speed_M1(0);
                     RosCommand_t stop_cmd = {0x10, 0, 0};
                     xQueueSendToFront(g_ros_cmd_queue, &stop_cmd, 0);
