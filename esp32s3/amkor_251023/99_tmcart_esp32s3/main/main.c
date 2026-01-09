@@ -952,6 +952,7 @@ void md750t_ctrl_task(void *arg) {
                 charging_dock_mode = false;
             } else if (g_battery_voltage < 26.5f) { // 26.5V 이하 정상 상태
                 over_charge_state_mode = false;
+                charging_dock_mode = true;  // [2026-01-09] 충전 자동 재시작
             }
         }
 
