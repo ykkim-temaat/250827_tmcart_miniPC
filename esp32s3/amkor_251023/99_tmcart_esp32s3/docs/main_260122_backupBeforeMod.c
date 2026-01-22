@@ -55,7 +55,6 @@
 #define ROS_AGENT_PORT     CONFIG_MICRO_ROS_AGENT_PORT
 
 static const char *TAG = "MAIN";
-static const char *FIRMWARE_VERSION = "TMCart_ESP32S3_v1.0.0_260120; over charge protection: 29.2V & reset after 27.2V";
 
 typedef enum {
     CPU_NUM_0 = 0,
@@ -880,7 +879,7 @@ void md750t_ctrl_task(void *arg) {
             // 조건: 수동충전(input_23의 8번째 비트가 0)이거나 충전 독 모드가 켜진 경우
             // 그리고 29.2V 이상의 과충전 상태가 아닌 경우
             if ((((input_23 & 0x80) == 0) || (charging_dock_mode == true)) && (over_charge_state_mode == false)) {
-                // P0 핀을 LOW로 설정하여 회로를 활성화(CLOSE)합니다. (충전시작)
+                // P0 핀을 LOW로 설정하여 회로를 활성화(CLOSE)합니다.
                 pcf8574_read_byte(PCF8574_ADDR_0x21, &input_21);
                 input_21 = input_21 & ~0x01; // Set P0 to LOW (Active LOW)
                 pcf8574_write_byte(PCF8574_ADDR_0x21, input_21);
@@ -888,8 +887,8 @@ void md750t_ctrl_task(void *arg) {
                 // ESP_LOGD(TAG, "Charge DET or Dock Mode -> CLOSE for PDIST80V2");
                 g_charging_state = true; // 상태 업데이트
             } else {
-                // 그 외의 경우 (수동충전 명령도 아니고 충전 독 명령 모드도 아닌 경우, 또는 과충전 상태인 경우)
-                // P0 핀을 HIGH로 설정하여 회로를 비활성화(OPEN)합니다. (충전정지)
+                // 그 외의 경우 (충전 중이 아니면서, 충전 독 모드도 아닌 경우)
+                // P0 핀을 HIGH로 설정하여 회로를 비활성화(OPEN)합니다.
                 pcf8574_read_byte(PCF8574_ADDR_0x21, &input_21);
                 input_21 = input_21 | 0x01;  // Set P0 to HIGH (Active LOW)
                 pcf8574_write_byte(PCF8574_ADDR_0x21, input_21);
@@ -946,15 +945,14 @@ void md750t_ctrl_task(void *arg) {
             ESP_LOGD(TAG, "Load Cell Voltages - CH0: %.3f V, CH1: %.3f V", read_voltage_ch0, read_voltage_ch1);
             ESP_LOGD(TAG, "Motor Voltages(CH2): %.3f V, Battery Voltage(CH3): %.3f V", g_motor_voltage, g_battery_voltage);
 
-            if (g_battery_voltage > 29.2f) {    // 29.2V 이상 과충전상태 진입 -> 충전중지
+            // if (g_battery_voltage > 29.2f) {    // 29.2V 이상 과충전 상태
+            if (g_battery_voltage > 29.0f) {    // 29.0V 이상 과충전 상태로 변경 테스트 (251112)
                 ESP_LOGW(TAG, "Battery voltage is over Charging status: %.2f V", g_battery_voltage);
                 over_charge_state_mode = true;
                 charging_dock_mode = false;
-            } else if (g_battery_voltage < 27.2f) { // 27.2V 이하로 복귀시 과충전상태 해제 -> 충전재개 가능
-                ESP_LOGI(TAG, "Battery voltage is back to Normal status: %.2f V", g_battery_voltage);
+            } else if (g_battery_voltage < 26.5f) { // 26.5V 이하 정상 상태
                 over_charge_state_mode = false;
-                // [2026-01-16] Bugfix 자동 충전 재개 기능 제거
-                // charging_dock_mode = true;  // [2026-01-09] 충전 자동 재시작
+                charging_dock_mode = true;  // [2026-01-09] 충전 자동 재시작
             }
         }
 
@@ -1088,5 +1086,5 @@ void app_main(void) {
     xTaskCreatePinnedToCore(linear_scale_task, "linear_scale_task", 4096, NULL, 3, NULL, CPU_NUM_1);
     xTaskCreatePinnedToCore(hall_sensor_task, "hall_sensor_task", 4096, NULL, 2, NULL, CPU_NUM_1);
 
-    ESP_LOGI(TAG, "TMCart Control Firmware Version: %s \n\n", FIRMWARE_VERSION);
+    ESP_LOGD(TAG, "hello temaat!! \n");
 }
