@@ -46,6 +46,8 @@
 #include "mcp4728.h"
 #include "pslh080.h"
 
+#include "uart1_mdrobot.h"
+
 #define RCCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){printf("Failed status on line %d: %d. Aborting.\n", __LINE__, (int)temp_rc); vTaskDelete(NULL);}}
 #define RCSOFTCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){printf("Failed status on line %d: %d. Continuing.\n", __LINE__, (int)temp_rc);}}
 
@@ -1274,6 +1276,35 @@ void hall_sensor_task(void *arg) {
     }
 }
 
+// MDRobot Communication Test Task
+void test_mdrobot_comm_task(void *arg) {
+    uint8_t val8;
+    uint16_t val16;
+    esp_err_t ret;
+
+    // UART1 초기화 대기
+    ESP_LOGI("TEST", "Waiting for MDRobot UART initialization...");
+    vTaskDelay(pdMS_TO_TICKS(10000));
+
+    while (1) {
+        ESP_LOGI("TEST", "--- Checking PID Values ---");
+
+        // [1Byte PID] PID 1 (Firmware Version)
+        ret = MdRobot_Get_PID_1Byte(1, &val8);
+        if (ret == ESP_OK) ESP_LOGI("TEST", "PID 1 (Firmware Version): %d", val8);
+        else ESP_LOGE("TEST", "PID 1 Read Failed");
+        vTaskDelay(pdMS_TO_TICKS(50));
+
+        // [2Byte PID] PID 183 (Func Cmd Type) - 매뉴얼 68p
+        // 15(MCAR)라면 0x000F가 수신되어야 함
+        ret = MdRobot_Get_PID_2Byte(183, &val16);
+        if (ret == ESP_OK) ESP_LOGI("TEST", "PID 183 (Func Cmd Type): %d (0x%04X)", val16, val16);
+        else ESP_LOGE("TEST", "PID 183 Read Failed");
+        
+        vTaskDelay(pdMS_TO_TICKS(5000));
+    }
+}
+
 void app_main(void) {
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -1302,10 +1333,14 @@ void app_main(void) {
     PCF8574_Init();
     pslh080_init();
 
+    MdRobot_Init();
+
     xTaskCreate(micro_ros_task, "micro_ros_task", CONFIG_MICRO_ROS_APP_STACK, NULL, CONFIG_MICRO_ROS_APP_TASK_PRIO, NULL);
     xTaskCreatePinnedToCore(md750t_ctrl_task, "md750t_ctrl_task", 1024 * 4, NULL, 4, NULL, CPU_NUM_1);
     xTaskCreatePinnedToCore(linear_scale_task, "linear_scale_task", 4096, NULL, 3, NULL, CPU_NUM_1);
     xTaskCreatePinnedToCore(hall_sensor_task, "hall_sensor_task", 4096, NULL, 2, NULL, CPU_NUM_1);
+
+    xTaskCreatePinnedToCore(test_mdrobot_comm_task, "test_mdrobot_comm_task", 4096, NULL, 1, NULL, CPU_NUM_0);
 
     ESP_LOGI(TAG, "TMCart Control Firmware Version: %s \n\n", FIRMWARE_VERSION);
 }
