@@ -1279,329 +1279,117 @@ void hall_sensor_task(void *arg) {
 // ===============================================================
 // [NEW] MCAR 주행 및 모니터링 테스트 태스크
 // ===============================================================
-#if 0
-void test_mdrobot_drive_task(void *arg) {
+void test_mdrobot_drive_task(void *arg) {    
     uint8_t val8;
     uint16_t val16;
     esp_err_t ret;
 
-    // PID 210 (PID_PNT_MAIN_DATA) 수신용 데이터 구조체
-    // 총 18 Byte (Motor1: 9Byte, Motor2: 9Byte)
-    typedef struct {
-        // --- Motor 1 (Left) ---
-        int16_t fb_rpm_l;   // 현재 속도 (0.1 RPM 단위)
-        int16_t current_l;  // 현재 전류 (0.1 A 단위)
-        uint8_t status_l;   // 상태 플래그 (Alarm, Run/Stop 등)
-        int32_t pos_l;      // 현재 위치 (Encoder Pulse Count, 4 Bytes)
-
-        // --- Motor 2 (Right) ---
-        int16_t fb_rpm_r;   // 현재 속도 (0.1 RPM 단위)
-        int16_t current_r;  // 현재 전류 (0.1 A 단위)
-        uint8_t status_r;   // 상태 플래그
-        int32_t pos_r;      // 현재 위치 (Encoder Pulse Count, 4 Bytes)
-    } md_dual_monitor_t;
-
-    md_dual_monitor_t mon; // 구조체 변수 선언 ('mon')
-    uint8_t rx_buf[64];
-
     // UART1 초기화 대기
     ESP_LOGI("TEST", "Waiting for MDRobot UART initialization...");
-    vTaskDelay(pdMS_TO_TICKS(5000));
+    vTaskDelay(pdMS_TO_TICKS(10000));
 
-    // ESP_LOGI(TAG, "Elec Brake ON...");
-    // MdRobot_Set_PID_1Byte(10, 17); 
-    // vTaskDelay(pdMS_TO_TICKS(1000));
+    // while (1) {
+    //     ESP_LOGI("TEST", "--- Checking PID Values ---");
 
-    // 통신제어권 확보 (PID 78 -> 1)
-    ESP_LOGI(TAG, "PID_UI_COM(78), data: 1");
-    MdRobot_Set_PID_1Byte(78, 1); 
-    vTaskDelay(pdMS_TO_TICKS(100));
+    //     // [1Byte PID] PID 1 (Firmware Version)
+    //     ret = MdRobot_Get_PID_1Byte(1, &val8);
+    //     if (ret == ESP_OK) ESP_LOGI("TEST", "PID 1 (Firmware Version): %d", val8);
+    //     else ESP_LOGE("TEST", "PID 1 Read Failed");
+    //     vTaskDelay(pdMS_TO_TICKS(50));
 
-    // 알람 리셋 (PID 12 -> 1)
-    ESP_LOGI("TEST", "Resetting Alarm (PID 12)...");
-    MdRobot_Set_PID_2Byte(12, 1);
-    vTaskDelay(pdMS_TO_TICKS(500));
+    //     // [2Byte PID] PID 183 (Func Cmd Type) - 매뉴얼 68p
+    //     // 15(MCAR)라면 0x000F가 수신되어야 함
+    //     ret = MdRobot_Get_PID_2Byte(183, &val16);
+    //     if (ret == ESP_OK) ESP_LOGI("TEST", "PID 183 (Func Cmd Type): %d (0x%04X)", val16, val16);
+    //     else ESP_LOGE("TEST", "PID 183 Read Failed");
+    //     vTaskDelay(pdMS_TO_TICKS(50));        
 
-    // -------------------------------------------------------------
-    // [속도 지령 추가] PID 207 (PID_PNT_VEL_CMD)
-    // -------------------------------------------------------------    
-    int16_t target_l = 1000;
-    int16_t target_r = 1000;
-    uint16_t slow_down = 500;
-    uint8_t tx_buf[9];  // 송신용 (PID 214 데이터)
-    ESP_LOGI("TEST", ">>> RPM Left: %d / Right: %d RPM / SD: %d (PID 214)", target_l, target_r, slow_down);
+    //     // 알람 리셋 (PID 12) - 혹시 모를 에러 클리어
+    //     ESP_LOGI(TAG, "Resetting Alarm...");
+    //     MdRobot_Set_PID_1Byte(12, 1); 
+    //     vTaskDelay(pdMS_TO_TICKS(500));
 
-    // [PID 214 패킷 구성] - 9 Bytes
-    tx_buf[0] = 1; // Motor 1 Enable
-    tx_buf[1] = (uint8_t)(target_l & 0xFF);
-    tx_buf[2] = (uint8_t)((target_l >> 8) & 0xFF);
-    tx_buf[3] = 1; // Motor 2 Enable
-    tx_buf[4] = (uint8_t)(target_r & 0xFF);
-    tx_buf[5] = (uint8_t)((target_r >> 8) & 0xFF);
-    tx_buf[6] = (uint8_t)(slow_down & 0xFF);
-    tx_buf[7] = (uint8_t)((slow_down >> 8) & 0xFF);
-    tx_buf[8] = 2; // Return Data Request PID_PNT_MAIN_DATA(2) -> PID 210 (Main Data) 요청
+    //     ESP_LOGI(TAG, "Elec Brake ON...");
+    //     MdRobot_Set_PID_1Byte(10, 17); 
+    //     vTaskDelay(pdMS_TO_TICKS(2000));
 
-    // [함수 호출] 송신(9bytes)
-    MdRobot_Set_PID_NByte(214, tx_buf, 9, NULL, 0);
-    
-    vTaskDelay(pdMS_TO_TICKS(500));
+    //     // ESP_LOGI(TAG, "Elec Brake OFF...");
+    //     // MdRobot_Set_PID_1Byte(10, 18); 
+    //     // vTaskDelay(pdMS_TO_TICKS(2000));
 
-    // [nByte PID] PID 210 (PID_PNT_MAIN_DATA)        
-    ret = MdRobot_Get_PID_NByte(210, rx_buf, 32);
-    if (ret == ESP_OK) {        
-        // [모터 1: Offset 0~8]
-        mon.fb_rpm_l  = (int16_t)(rx_buf[0] | (rx_buf[1] << 8));
-        mon.current_l = (int16_t)(rx_buf[2] | (rx_buf[3] << 8));
-        mon.status_l  = rx_buf[4];
-        // 위치: 4 Bytes (Little Endian)
-        mon.pos_l     = (int32_t)(rx_buf[5] | (rx_buf[6] << 8) | (rx_buf[7] << 16) | (rx_buf[8] << 24));
+    //     vTaskDelay(pdMS_TO_TICKS(5000));
+    // }
 
-        // [모터 2: Offset 9~17]
-        mon.fb_rpm_r  = (int16_t)(rx_buf[9] | (rx_buf[10] << 8));
-        mon.current_r = (int16_t)(rx_buf[11] | (rx_buf[12] << 8));
-        mon.status_r  = rx_buf[13];
-        // 위치: 4 Bytes (Little Endian)
-        mon.pos_r     = (int32_t)(rx_buf[14] | (rx_buf[15] << 8) | (rx_buf[16] << 16) | (rx_buf[17] << 24));
+    // // 1. 드라이버 부팅 대기 (5초)
+    // ESP_LOGI(TAG, "Waiting for MD750T Boot (5s)...");
+    // vTaskDelay(pdMS_TO_TICKS(5000)); 
 
-        // 로그 출력
-        ESP_LOGI("MON", "RPM: %d/%d, CUR: %.1f/%.1f A, POS: %ld/%ld", 
-                    mon.fb_rpm_l, mon.fb_rpm_r, 
-                    mon.current_l/10.0f, mon.current_r/10.0f,
-                    mon.pos_l, mon.pos_r);
-
-    } else {
-        ESP_LOGW("MON", "PID 210 Read Failed");
-    }
-
-
-
-
-    vTaskDelay(pdMS_TO_TICKS(1000));
-
-    // MD750T-V7.1-MCAR-E 엔코더 모드로 설정
-    ESP_LOGI(TAG, "PID_UI_COM(78), data: 0");
-    MdRobot_Set_PID_1Byte(78, 0); 
-    vTaskDelay(pdMS_TO_TICKS(50));   
-
-    ESP_LOGI(TAG, "PID_FUNC_CMD_TYPE(183), data: 15 (MCAR Mode)");
-    MdRobot_Set_PID_2Byte(183, 15);
-    vTaskDelay(pdMS_TO_TICKS(50));
-
-    ESP_LOGI(TAG, "PID_ENC_PPR(156), data: 16384");
-    MdRobot_Set_PID_2Byte(156, 16384); 
-    vTaskDelay(pdMS_TO_TICKS(50));
-
-    ESP_LOGI(TAG, "PID_USE_EPOSI(46), data: 1");
-    MdRobot_Set_PID_1Byte(46, 1); 
-    vTaskDelay(pdMS_TO_TICKS(50));
-
-    while (1) {
-        ESP_LOGI("RS485", "--- Checking PID Values ---");
-
-        // [1Byte PID] PID 1 (Firmware Version)
-        ret = MdRobot_Get_PID_1Byte(1, &val8);
-        if (ret == ESP_OK) ESP_LOGI("RS485", "PID 1 (Firmware Version): %d", val8);
-        else ESP_LOGE("RS485", "PID 1 Read Failed");
-        vTaskDelay(pdMS_TO_TICKS(50));
-
-        // [1Byte PID] PID 78 (UI Command)
-        ret = MdRobot_Get_PID_1Byte(78, &val8);
-        if (ret == ESP_OK) ESP_LOGI("RS485", "PID 78 (UI Command): %d", val8);
-        else ESP_LOGE("RS485", "PID 78 Read Failed");
-        vTaskDelay(pdMS_TO_TICKS(50));
-
-        // [1Byte PID] PID 149 (PID_RETURN_TYPE)
-        ret = MdRobot_Get_PID_1Byte(149, &val8);
-        if (ret == ESP_OK) ESP_LOGI("RS485", "PID 149 (PID_RETURN_TYPE): %d (0x%02X)", val8, val8);
-        else ESP_LOGE("RS485", "PID 149 Read Failed");
-        vTaskDelay(pdMS_TO_TICKS(50));
-
-        // [2Byte PID] PID 183 (Func Cmd Type)
-        ret = MdRobot_Get_PID_2Byte(183, &val16);
-        if (ret == ESP_OK) ESP_LOGI("RS485", "PID 183 (Func Cmd Type): %d (0x%04X)", val16, val16);
-        else ESP_LOGE("RS485", "PID 183 Read Failed");
-        vTaskDelay(pdMS_TO_TICKS(50));
-
-        // [2Byte PID] PID 185 (PID_COM_WATCH_DELAY)
-        ret = MdRobot_Get_PID_2Byte(185, &val16);
-        if (ret == ESP_OK) ESP_LOGI("RS485", "PID 185 (PID_COM_WATCH_DELAY): %d (0x%04X)", val16, val16);
-        else ESP_LOGE("RS485", "PID 185 Read Failed");
-        vTaskDelay(pdMS_TO_TICKS(50));
-
-        // [nByte PID] PID 205 (PID_TYPE)
-        ret = MdRobot_Get_PID_NByte(205, (uint8_t*)rx_buf, 20);
-        if (ret == ESP_OK) ESP_LOGI("RS485", "PID 205 (PID_TYPE): %s", rx_buf);
-        else ESP_LOGE("RS485", "PID 205 Read Failed");
-        vTaskDelay(pdMS_TO_TICKS(50));  
-        
-        // [nByte PID] PID 210 (PID_PNT_MAIN_DATA)        
-        ret = MdRobot_Get_PID_NByte(210, rx_buf, 32);
-        if (ret == ESP_OK) {
-            
-            // --- [18 Byte 구조 파싱] ---
-            
-            // [모터 1: Offset 0~8]
-            mon.fb_rpm_l  = (int16_t)(rx_buf[0] | (rx_buf[1] << 8));
-            mon.current_l = (int16_t)(rx_buf[2] | (rx_buf[3] << 8));
-            mon.status_l  = rx_buf[4];
-            // 위치: 4 Bytes (Little Endian)
-            mon.pos_l     = (int32_t)(rx_buf[5] | (rx_buf[6] << 8) | (rx_buf[7] << 16) | (rx_buf[8] << 24));
-
-            // [모터 2: Offset 9~17]
-            mon.fb_rpm_r  = (int16_t)(rx_buf[9] | (rx_buf[10] << 8));
-            mon.current_r = (int16_t)(rx_buf[11] | (rx_buf[12] << 8));
-            mon.status_r  = rx_buf[13];
-            // 위치: 4 Bytes (Little Endian)
-            mon.pos_r     = (int32_t)(rx_buf[14] | (rx_buf[15] << 8) | (rx_buf[16] << 16) | (rx_buf[17] << 24));
-
-            // 로그 출력
-            ESP_LOGI("MON", "RPM: %d/%d, CUR: %.1f/%.1f A, POS: %ld/%ld", 
-                     mon.fb_rpm_l, mon.fb_rpm_r, 
-                     mon.current_l/10.0f, mon.current_r/10.0f,
-                     mon.pos_l, mon.pos_r);
-
-        } else {
-            ESP_LOGW("MON", "PID 210 Read Failed");
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(5000));
-    }
-}
-#endif
-
-void test_mdrobot_drive_task(void *arg) {
-    esp_err_t ret_rx;
-    uint8_t val8;
-    uint16_t val16;
-    uint8_t rx_buf[64];
-    md_dual_monitor_t mon;
-
-    // 1. UART 초기화 대기
-    ESP_LOGI("RS485", "Waiting for UART1_MDROBOT - initialization...");
-    vTaskDelay(pdMS_TO_TICKS(5000));
-
-    // 통신제어권 확보 (PID 78 -> 1)
-    ESP_LOGI("RS485", "PID_UI_COM(78), data: 1");
-    MdRobot_Set_PID_1Byte(78, 1); 
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    // // 알람 리셋 (PID 12 -> 1)
-    // ESP_LOGI("RS485", "Resetting Alarm (PID 12)...");
-    // MdRobot_Set_PID_2Byte(12, 1);
+    // // 2. 알람 리셋 (PID 12) - 혹시 모를 에러 클리어
+    // ESP_LOGI(TAG, "Resetting Alarm...");
+    // MdRobot_Set_PID_1Byte(12, 1); 
     // vTaskDelay(pdMS_TO_TICKS(500));
+
+    // // 3. 주행 루프
+    // // 시나리오: 정지 -> 전진(저속) -> 정지 -> 후진(저속) -> 정지
+    // const int16_t SPEED_FWD = 100;  // 100 RPM
+    // const int16_t SPEED_BWD = -100; // -100 RPM
+    // const int16_t SPEED_STOP = 0;
+
+    // int step = 0;
+    // uint8_t monitor_buf[32]; // PID 193 수신용 버퍼 (충분히 크게)
     
-    // Slow Start 설정 (PID 153)
-    ESP_LOGI("RS485", "Setting Slow Start (PID 153)...");
-    MdRobot_Set_PID_2Byte(153, 500);
-    vTaskDelay(pdMS_TO_TICKS(500));
+    // while (1) {
+    //     int16_t target_l = 0, target_r = 0;
+        
+    //     // --- Step별 속도 설정 ---
+    //     switch(step) {
+    //         case 0: // 정지 (2초)
+    //             target_l = SPEED_STOP; target_r = SPEED_STOP;
+    //             if(xTaskGetTickCount() % 2000 == 0) { step = 1; ESP_LOGI("DRIVE", ">>> GO FORWARD"); }
+    //             break;
+    //         case 1: // 전진 (3초)
+    //             target_l = SPEED_FWD; target_r = SPEED_FWD;
+    //             if(xTaskGetTickCount() % 3000 == 0) { step = 2; ESP_LOGI("DRIVE", ">>> STOP"); }
+    //             break;
+    //         case 2: // 정지 (2초)
+    //             target_l = SPEED_STOP; target_r = SPEED_STOP;
+    //             if(xTaskGetTickCount() % 2000 == 0) { step = 3; ESP_LOGI("DRIVE", ">>> GO BACKWARD"); }
+    //             break;
+    //         case 3: // 후진 (3초)
+    //             target_l = SPEED_BWD; target_r = SPEED_BWD;
+    //             if(xTaskGetTickCount() % 3000 == 0) { step = 0; ESP_LOGI("DRIVE", ">>> STOP"); }
+    //             break;
+    //     }
 
-    if (MdRobot_Drive_Dual_With_SD(1000, 1000, 500) == ESP_OK) {
-        ESP_LOGI("RS485", "MDRobot Dual Drive Command Sent: Left 1000 RPM, Right 1000 RPM, Slow Down 500");
-    } else {
-        ESP_LOGE("RS485", "MDRobot Dual Drive Command Failed");
-    }
+    //     // --- [CMD] PID 207: Dual Velocity Command (4 Bytes) ---
+    //     uint8_t vel_cmd[4];
+    //     // Little Endian: Low Byte First
+    //     vel_cmd[0] = (uint8_t)(target_l & 0xFF);
+    //     vel_cmd[1] = (uint8_t)((target_l >> 8) & 0xFF);
+    //     vel_cmd[2] = (uint8_t)(target_r & 0xFF);
+    //     vel_cmd[3] = (uint8_t)((target_r >> 8) & 0xFF);
 
-    vTaskDelay(pdMS_TO_TICKS(1500));
+    //     MdRobot_Set_PID_NByte(PID_PNT_VEL_CMD, vel_cmd, 4);
 
-    // [모니터 데이터 읽기]
-    ret_rx = MdRobot_Read_Monitor_Data(&mon);
+    //     // --- [REQ] PID 193: Monitor Main Data ---
+    //     // PID 193의 데이터 길이는 모델마다 다르지만 보통 18~22 바이트 내외입니다.
+    //     // 우선 10바이트만 읽어서 앞부분(RPM 등)을 확인합니다.
+    //     esp_err_t ret = MdRobot_Get_PID_NByte(PID_MAIN_DATA, monitor_buf, 10); 
+        
+    //     if (ret == ESP_OK) {
+    //         // PID 193 데이터 포맷 (예시):
+    //         // [0-1]: Ref RPM L, [2-3]: Ref RPM R, [4-5]: Cur RPM L, [6-7]: Cur RPM R, [8]: Status ...
+    //         // (정확한 맵은 매뉴얼 PID 193 참조 필요)
+    //         int16_t cur_rpm_l = (int16_t)(monitor_buf[4] | (monitor_buf[5] << 8));
+    //         int16_t cur_rpm_r = (int16_t)(monitor_buf[6] | (monitor_buf[7] << 8));
+            
+    //         ESP_LOGI("DRIVE", "Cmd: %d, FB: L=%d R=%d", target_l, cur_rpm_l, cur_rpm_r);
+    //     } else {
+    //         ESP_LOGW("DRIVE", "Monitor Fail");
+    //     }
 
-    if (ret_rx == ESP_OK) {
-        ESP_LOGI("RS485", "RPM: %d/%d | POS: %ld/%ld | CUR: %.1f/%.1f", 
-                    mon.fb_rpm_l, mon.fb_rpm_r, 
-                    mon.pos_l, mon.pos_r,
-                    mon.current_l/10.0f, mon.current_r/10.0f);
-    } else {
-        ESP_LOGW("RS485", "Monitor Failed");
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(500));
-
-    if (MdRobot_Drive_Dual_With_SD(0, 0, 500) == ESP_OK) {
-        ESP_LOGI("RS485", "MDRobot Dual Drive Command Sent: Left 0 RPM, Right 0 RPM, Slow Down 500");
-    } else {
-        ESP_LOGE("RS485", "MDRobot Dual Drive Command Failed");
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(500));
-
-    // [모니터 데이터 읽기]
-    ret_rx = MdRobot_Read_Monitor_Data(&mon);
-
-    if (ret_rx == ESP_OK) {
-        ESP_LOGI("RS485", "RPM: %d/%d | POS: %ld/%ld | CUR: %.1f/%.1f", 
-                    mon.fb_rpm_l, mon.fb_rpm_r, 
-                    mon.pos_l, mon.pos_r,
-                    mon.current_l/10.0f, mon.current_r/10.0f);
-    } else {
-        ESP_LOGW("RS485", "Monitor Failed");
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(1000));
-
-    // 2. 초기 설정 (MD750T-V7.1-MCAR-E 기준)
-    ESP_LOGI("RS485", "Configuring MD750T to MCAR mode...");
-    MdRobot_Set_MCAR_Mode();
-    // [nByte PID] PID 205 (PID_TYPE)
-    ret_rx = MdRobot_Get_PID_NByte(205, (uint8_t*)rx_buf, 20);
-    if (ret_rx == ESP_OK) ESP_LOGI("RS485", "PID 205 (PID_TYPE): %s", rx_buf);
-    else ESP_LOGE("RS485", "PID 205 Read Failed");
-    vTaskDelay(pdMS_TO_TICKS(50));  
-
-    while (1) {
-        ESP_LOGI("RS485", "--- Checking PID Values ---");
-
-        // [1Byte PID] PID 1 (Firmware Version)
-        ret_rx = MdRobot_Get_PID_1Byte(1, &val8);
-        if (ret_rx == ESP_OK) ESP_LOGI("RS485", "PID 1 (Firmware Version): %d", val8);
-        else ESP_LOGE("RS485", "PID 1 Read Failed");
-        vTaskDelay(pdMS_TO_TICKS(50));
-
-        // [1Byte PID] PID 78 (UI Command)
-        ret_rx = MdRobot_Get_PID_1Byte(78, &val8);
-        if (ret_rx == ESP_OK) ESP_LOGI("RS485", "PID 78 (UI Command): %d", val8);
-        else ESP_LOGE("RS485", "PID 78 Read Failed");
-        vTaskDelay(pdMS_TO_TICKS(50));
-
-        // [1Byte PID] PID 149 (PID_RETURN_TYPE)
-        ret_rx = MdRobot_Get_PID_1Byte(149, &val8);
-        if (ret_rx == ESP_OK) ESP_LOGI("RS485", "PID 149 (PID_RETURN_TYPE): %d (0x%02X)", val8, val8);
-        else ESP_LOGE("RS485", "PID 149 Read Failed");
-        vTaskDelay(pdMS_TO_TICKS(50));
-
-        // [2Byte PID] PID 183 (Func Cmd Type)
-        ret_rx = MdRobot_Get_PID_2Byte(183, &val16);
-        if (ret_rx == ESP_OK) ESP_LOGI("RS485", "PID 183 (Func Cmd Type): %d (0x%04X)", val16, val16);
-        else ESP_LOGE("RS485", "PID 183 Read Failed");
-        vTaskDelay(pdMS_TO_TICKS(50));
-
-        // [2Byte PID] PID 185 (PID_COM_WATCH_DELAY)
-        ret_rx = MdRobot_Get_PID_2Byte(185, &val16);
-        if (ret_rx == ESP_OK) ESP_LOGI("RS485", "PID 185 (PID_COM_WATCH_DELAY): %d (0x%04X)", val16, val16);
-        else ESP_LOGE("RS485", "PID 185 Read Failed");
-        vTaskDelay(pdMS_TO_TICKS(50));
-
-        // [nByte PID] PID 205 (PID_TYPE)
-        ret_rx = MdRobot_Get_PID_NByte(205, (uint8_t*)rx_buf, 20);
-        if (ret_rx == ESP_OK) ESP_LOGI("RS485", "PID 205 (PID_TYPE): %s", rx_buf);
-        else ESP_LOGE("RS485", "PID 205 Read Failed");
-        vTaskDelay(pdMS_TO_TICKS(50));
-
-        // [모니터 데이터 읽기]
-        esp_err_t ret_rx = MdRobot_Read_Monitor_Data(&mon);
-
-        if (ret_rx == ESP_OK) {
-            ESP_LOGI("RS485", "RPM: %d/%d | POS: %ld/%ld | CUR: %.1f/%.1f", 
-                     mon.fb_rpm_l, mon.fb_rpm_r, 
-                     mon.pos_l, mon.pos_r,
-                     mon.current_l/10.0f, mon.current_r/10.0f);
-        } else {
-            ESP_LOGW("RS485", "Monitor Failed");
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(5000));
-    }
+    //     vTaskDelay(pdMS_TO_TICKS(200)); // 200ms 주기 제어
+    // }
 }
 
 void app_main(void) {
