@@ -156,82 +156,7 @@ esp_err_t MdRobot_Get_PID_NByte(uint8_t pid, uint8_t *data_buf, uint8_t expected
     return MdRobot_Request_Common(pid, data_buf, expected_len);
 }
 
-// // N-Byte 쓰기 및 응답 수신 (PID 검증 없음, Pass-Through)
-// esp_err_t MdRobot_Set_PID_NByte(uint8_t pid, uint8_t *tx_data, uint8_t tx_len, uint8_t *rx_buf, uint8_t max_rx_len) {
-//     if (tx_len > 200) return ESP_ERR_INVALID_ARG;
-
-//     // 1. 송신 버퍼 비우기
-//     uart_flush_input(UART_NUM_1);
-
-//     // 2. 패킷 생성 (헤더5 + 데이터 + 체크섬1)
-//     uint8_t pkt[256]; 
-//     pkt[0] = MD_RMID;
-//     pkt[1] = MD_TMID;
-//     pkt[2] = MD_ID_DEFAULT;
-//     pkt[3] = pid;
-//     pkt[4] = tx_len;
-    
-//     memcpy(&pkt[5], tx_data, tx_len);
-//     pkt[5 + tx_len] = MdRobot_CalcChecksum(pkt, 5 + tx_len);
-
-//     // 3. 전송
-//     uart_write_bytes(UART_NUM_1, (const char*)pkt, 6 + tx_len);
-
-//     // 4. 수신 버퍼가 없다면 여기서 종료 (Write Only)
-//     if (rx_buf == NULL || max_rx_len == 0) {
-//         vTaskDelay(pdMS_TO_TICKS(5)); 
-//         return ESP_OK;
-//     }
-
-//     // ============================================================
-//     // 5. 응답 수신 로직 (PID 검증 없이 Pass-Through)
-//     // ============================================================
-    
-//     uint8_t temp_buf[BUF_SIZE];
-//     // 응답 대기
-//     int rx_len = uart_read_bytes(UART_NUM_1, temp_buf, BUF_SIZE, pdMS_TO_TICKS(100));
-
-//     if (rx_len < 6) return ESP_ERR_TIMEOUT;
-
-//     // 헤더 찾기
-//     int idx = -1;
-//     for (int i = 0; i <= rx_len - 6; i++) {
-//         if (temp_buf[i] == MD_TMID && temp_buf[i+1] == MD_RMID) {
-//             idx = i;
-//             break;
-//         }
-//     }
-//     if (idx == -1) return ESP_FAIL;
-
-//     // [변경] PID 검증 로직 제거됨 
-//     // 수신된 PID가 요청 PID와 달라도(예: 214 요청 -> 210 응답) 데이터가 유효하면 통과시킵니다.
-//     // 사용자가 필요하다면 rx_buf 등에서 확인할 수 있습니다. (현재 rx_buf에는 데이터만 담김)
-    
-//     // 6. 데이터 파싱
-//     uint8_t recv_data_len = temp_buf[idx + 4];
-//     int packet_total_len = 5 + recv_data_len + 1;
-
-//     // 길이 검증
-//     if (rx_len < (idx + packet_total_len)) {
-//         ESP_LOGW(TAG, "Incomplete Response. Len: %d, Recv: %d", recv_data_len, rx_len);
-//         return ESP_FAIL;
-//     }
-
-//     // 체크섬 검증
-//     uint8_t calc_sum = MdRobot_CalcChecksum(&temp_buf[idx], packet_total_len - 1);
-//     if (temp_buf[idx + packet_total_len - 1] != calc_sum) {
-//         ESP_LOGW(TAG, "Checksum Error in Response");
-//         return ESP_FAIL;
-//     }
-
-//     // 데이터 복사 (PID와 상관없이 데이터 내용물만 복사)
-//     uint8_t copy_len = (recv_data_len < max_rx_len) ? recv_data_len : max_rx_len;
-//     memcpy(rx_buf, &temp_buf[idx + 5], copy_len);
-
-//     return ESP_OK;
-// }
-
-// [디버깅용 수정] MdRobot_Set_PID_NByte
+// MdRobot_Set_PID_NByte
 esp_err_t MdRobot_Set_PID_NByte(uint8_t pid, uint8_t *tx_data, uint8_t tx_len, uint8_t *rx_buf, uint8_t max_rx_len) {
     if (tx_len > 200) return ESP_ERR_INVALID_ARG;
 
@@ -249,7 +174,7 @@ esp_err_t MdRobot_Set_PID_NByte(uint8_t pid, uint8_t *tx_data, uint8_t tx_len, u
         return ESP_OK;
     }
 
-    // [디버깅 1] 타임아웃 확인 (타임아웃 200ms로 증가)
+    // 타임아웃 확인 (타임아웃 200ms로 증가)
     uint8_t temp_buf[BUF_SIZE];
     int rx_len = uart_read_bytes(UART_NUM_1, temp_buf, BUF_SIZE, pdMS_TO_TICKS(200)); 
 
@@ -258,7 +183,7 @@ esp_err_t MdRobot_Set_PID_NByte(uint8_t pid, uint8_t *tx_data, uint8_t tx_len, u
         return ESP_ERR_TIMEOUT;
     }
 
-    // [디버깅 2] 수신 데이터 덤프 (매우 중요)
+    // 수신 데이터 덤프 (매우 중요)
     ESP_LOGI(TAG, "RX Dump (%d bytes):", rx_len);
     ESP_LOG_BUFFER_HEX(TAG, temp_buf, rx_len);
 
@@ -278,7 +203,7 @@ esp_err_t MdRobot_Set_PID_NByte(uint8_t pid, uint8_t *tx_data, uint8_t tx_len, u
     uint8_t recv_data_len = temp_buf[idx + 4];
     int packet_total_len = 5 + recv_data_len + 1;
 
-    // [디버깅 3] 길이 검증
+    // 길이 검증
     if (rx_len < (idx + packet_total_len)) {
         ESP_LOGE(TAG, "Length Mismatch: Expected=%d, Actual=%d, DataNum=%d", 
                  packet_total_len, rx_len - idx, recv_data_len);
@@ -305,25 +230,35 @@ esp_err_t MdRobot_Set_PID_NByte(uint8_t pid, uint8_t *tx_data, uint8_t tx_len, u
 // =========================================================
 
 // MCAR 모드 설정 (PID 183)
+// MD750T-V7.1-MCAR-E 엔코더 모드로 설정
 esp_err_t MdRobot_Set_MCAR_Mode(void) {
-    // MD750T-V7.1-MCAR-E 엔코더 모드로 설정
-    ESP_LOGI(TAG, "PID_UI_COM(78), data: 0");
-    MdRobot_Set_PID_1Byte(78, 0); 
-    vTaskDelay(pdMS_TO_TICKS(50));   
+    esp_err_t ret;
+    uint8_t rx_buf[64];
 
-    ESP_LOGI(TAG, "PID_FUNC_CMD_TYPE(183), data: 15 (MCAR Mode)");
-    MdRobot_Set_PID_2Byte(183, 15);
-    vTaskDelay(pdMS_TO_TICKS(50));
+    ret = MdRobot_Set_PID_1Byte(78, 0);
+    if (ret == ESP_OK) ESP_LOGI(TAG, "PID 78 Set to 0 (CTRL I/O Mode)");
+    else ESP_LOGE(TAG, "Failed to set PID 78");
+    
+    ret = MdRobot_Set_PID_2Byte(183, 15);
+    if (ret == ESP_OK) ESP_LOGI(TAG, "PID 183 Set to 15 (MCAR Mode)");
+    else ESP_LOGE(TAG, "Failed to set PID 183");
 
-    ESP_LOGI(TAG, "PID_ENC_PPR(156), data: 16384");
-    MdRobot_Set_PID_2Byte(156, 16384); 
-    vTaskDelay(pdMS_TO_TICKS(50));
+    ret = MdRobot_Set_PID_2Byte(156, 16384);
+    if (ret == ESP_OK) ESP_LOGI(TAG, "PID 156 Set to 16384 (Encoder PPR)");
+    else ESP_LOGE(TAG, "Failed to set PID 156");
 
-    ESP_LOGI(TAG, "PID_USE_EPOSI(46), data: 1");
-    MdRobot_Set_PID_1Byte(46, 1); 
-    vTaskDelay(pdMS_TO_TICKS(50));
+    ret = MdRobot_Set_PID_1Byte(46, 1); 
+    if (ret == ESP_OK) ESP_LOGI(TAG, "PID 46 Set to 1 (Use Encoder Position)");
+    else ESP_LOGE(TAG, "Failed to set PID 46");
 
-    return ESP_OK;
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    
+    // [nByte PID] PID 205 (PID_TYPE)
+    ret = MdRobot_Get_PID_NByte(205, rx_buf, 20);
+    if (ret == ESP_OK) ESP_LOGI(TAG, "PID 205 (PID_TYPE): %s", rx_buf);
+    else ESP_LOGE(TAG, "PID 205 Read Failed");
+
+    return ret;
 }
 
 // 듀얼 모터 속도 지령 (PID 214) - 8 Bytes, Write Only

@@ -814,27 +814,27 @@ void md750t_ctrl_task(void *arg) {
                 float set_voltage_tmp = (set_voltage_ch0 + set_voltage_ch1) / 2.0f; 
                 set_voltage_ch0 = set_voltage_tmp;
                 set_voltage_ch1 = set_voltage_tmp;
-                ESP_LOGI(TAG, "set_voltage_ch0 & ch1 limited to %.2f V", set_voltage_tmp);
+                // ESP_LOGI(TAG, "set_voltage_ch0 & ch1 limited to %.2f V", set_voltage_tmp);
             }
 
             // 전진속도 제한
             if (set_voltage_ch0 < 2.15) {
                 set_voltage_ch0 = 2.15f;
-                ESP_LOGI(TAG, "set_voltage_ch0 limited to 2.15f V");
+                // ESP_LOGI(TAG, "set_voltage_ch0 limited to 2.15f V");
             }
             if (set_voltage_ch1 < 2.15) {
                 set_voltage_ch1 = 2.15f;
-                ESP_LOGI(TAG, "set_voltage_ch1 limited to 2.15f V");
+                // ESP_LOGI(TAG, "set_voltage_ch1 limited to 2.15f V");
             }  
 
             // 후진속도 제한
             if (set_voltage_ch0 > 2.81) {
                 set_voltage_ch0 = 2.81f;
-                ESP_LOGI(TAG, "set_voltage_ch0 limited to 2.81f V");
+                // ESP_LOGI(TAG, "set_voltage_ch0 limited to 2.81f V");
             }
             if (set_voltage_ch1 > 2.81) {
                 set_voltage_ch1 = 2.81f;
-                ESP_LOGI(TAG, "set_voltage_ch1 limited to 2.81f V");
+                // ESP_LOGI(TAG, "set_voltage_ch1 limited to 2.81f V");
             }            
 
             // ESP_LOGD(TAG, "set_voltage_ch0: %.2f V, ch1: %.2f V\n", set_voltage_ch0, set_voltage_ch1);
@@ -844,11 +844,11 @@ void md750t_ctrl_task(void *arg) {
                 if (set_voltage_ch0 < 2.2f || set_voltage_ch1 < 2.2f) {
                     set_voltage_ch0 = 2.19f;
                     set_voltage_ch1 = 2.19f;
-                    ESP_LOGI(TAG, "Slow Drive Mode: FWD limited to 2.19f V");
+                    // ESP_LOGI(TAG, "Slow Drive Mode: FWD limited to 2.19f V");
                 } else if (set_voltage_ch0 > 2.8f || set_voltage_ch1 > 2.8f) {
                     set_voltage_ch0 = 2.81f;
                     set_voltage_ch1 = 2.81f;
-                    ESP_LOGI(TAG, "Slow Drive Mode: BACK limited to 2.81f V");
+                    // ESP_LOGI(TAG, "Slow Drive Mode: BACK limited to 2.81f V");
                 }
             }
 
@@ -856,17 +856,17 @@ void md750t_ctrl_task(void *arg) {
             if (twist_mode == true) { 
                 if (set_voltage_ch0 < 2.2f) {
                     set_voltage_ch0 = 2.19f;
-                    ESP_LOGI(TAG, "Twist Mode: LEFT FWD limited to 2.19f V");
+                    // ESP_LOGI(TAG, "Twist Mode: LEFT FWD limited to 2.19f V");
                 } else if (set_voltage_ch0 > 2.8f) {
                     set_voltage_ch0 = 2.81f;
-                    ESP_LOGI(TAG, "Twist Mode: LEFT BACK limited to 2.81f V");
+                    // ESP_LOGI(TAG, "Twist Mode: LEFT BACK limited to 2.81f V");
                 }
                 if (set_voltage_ch1 < 2.2f) {
                     set_voltage_ch1 = 2.19f;
-                    ESP_LOGI(TAG, "Twist Mode: RIGHT FWD limited to 2.19f V");
+                    // ESP_LOGI(TAG, "Twist Mode: RIGHT FWD limited to 2.19f V");
                 } else if (set_voltage_ch1 > 2.8f) {
                     set_voltage_ch1 = 2.81f;
-                    ESP_LOGI(TAG, "Twist Mode: RIGHT BACK limited to 2.81f V");
+                    // ESP_LOGI(TAG, "Twist Mode: RIGHT BACK limited to 2.81f V");
                 }
             }
 
@@ -1471,134 +1471,17 @@ void test_mdrobot_drive_task(void *arg) {
 #endif
 
 void test_mdrobot_drive_task(void *arg) {
-    esp_err_t ret_rx;
-    uint8_t val8;
-    uint16_t val16;
+    esp_err_t ret;
     uint8_t rx_buf[64];
-    md_dual_monitor_t mon;
 
-    // 1. UART 초기화 대기
+    // UART 초기화 대기
     ESP_LOGI("RS485", "Waiting for UART1_MDROBOT - initialization...");
     vTaskDelay(pdMS_TO_TICKS(5000));
 
-    // 통신제어권 확보 (PID 78 -> 1)
-    ESP_LOGI("RS485", "PID_UI_COM(78), data: 1");
-    MdRobot_Set_PID_1Byte(78, 1); 
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    // // 알람 리셋 (PID 12 -> 1)
-    // ESP_LOGI("RS485", "Resetting Alarm (PID 12)...");
-    // MdRobot_Set_PID_2Byte(12, 1);
-    // vTaskDelay(pdMS_TO_TICKS(500));
-    
-    // Slow Start 설정 (PID 153)
-    ESP_LOGI("RS485", "Setting Slow Start (PID 153)...");
-    MdRobot_Set_PID_2Byte(153, 500);
-    vTaskDelay(pdMS_TO_TICKS(500));
-
-    if (MdRobot_Drive_Dual_With_SD(1000, 1000, 500) == ESP_OK) {
-        ESP_LOGI("RS485", "MDRobot Dual Drive Command Sent: Left 1000 RPM, Right 1000 RPM, Slow Down 500");
-    } else {
-        ESP_LOGE("RS485", "MDRobot Dual Drive Command Failed");
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(1500));
-
-    // [모니터 데이터 읽기]
-    ret_rx = MdRobot_Read_Monitor_Data(&mon);
-
-    if (ret_rx == ESP_OK) {
-        ESP_LOGI("RS485", "RPM: %d/%d | POS: %ld/%ld | CUR: %.1f/%.1f", 
-                    mon.fb_rpm_l, mon.fb_rpm_r, 
-                    mon.pos_l, mon.pos_r,
-                    mon.current_l/10.0f, mon.current_r/10.0f);
-    } else {
-        ESP_LOGW("RS485", "Monitor Failed");
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(500));
-
-    if (MdRobot_Drive_Dual_With_SD(0, 0, 500) == ESP_OK) {
-        ESP_LOGI("RS485", "MDRobot Dual Drive Command Sent: Left 0 RPM, Right 0 RPM, Slow Down 500");
-    } else {
-        ESP_LOGE("RS485", "MDRobot Dual Drive Command Failed");
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(500));
-
-    // [모니터 데이터 읽기]
-    ret_rx = MdRobot_Read_Monitor_Data(&mon);
-
-    if (ret_rx == ESP_OK) {
-        ESP_LOGI("RS485", "RPM: %d/%d | POS: %ld/%ld | CUR: %.1f/%.1f", 
-                    mon.fb_rpm_l, mon.fb_rpm_r, 
-                    mon.pos_l, mon.pos_r,
-                    mon.current_l/10.0f, mon.current_r/10.0f);
-    } else {
-        ESP_LOGW("RS485", "Monitor Failed");
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(1000));
-
-    // 2. 초기 설정 (MD750T-V7.1-MCAR-E 기준)
-    ESP_LOGI("RS485", "Configuring MD750T to MCAR mode...");
+    // 초기값 설정 - MD750T-V7.1-MCAR-E 엔코더 모드로 설정
     MdRobot_Set_MCAR_Mode();
-    // [nByte PID] PID 205 (PID_TYPE)
-    ret_rx = MdRobot_Get_PID_NByte(205, (uint8_t*)rx_buf, 20);
-    if (ret_rx == ESP_OK) ESP_LOGI("RS485", "PID 205 (PID_TYPE): %s", rx_buf);
-    else ESP_LOGE("RS485", "PID 205 Read Failed");
-    vTaskDelay(pdMS_TO_TICKS(50));  
 
     while (1) {
-        ESP_LOGI("RS485", "--- Checking PID Values ---");
-
-        // [1Byte PID] PID 1 (Firmware Version)
-        ret_rx = MdRobot_Get_PID_1Byte(1, &val8);
-        if (ret_rx == ESP_OK) ESP_LOGI("RS485", "PID 1 (Firmware Version): %d", val8);
-        else ESP_LOGE("RS485", "PID 1 Read Failed");
-        vTaskDelay(pdMS_TO_TICKS(50));
-
-        // [1Byte PID] PID 78 (UI Command)
-        ret_rx = MdRobot_Get_PID_1Byte(78, &val8);
-        if (ret_rx == ESP_OK) ESP_LOGI("RS485", "PID 78 (UI Command): %d", val8);
-        else ESP_LOGE("RS485", "PID 78 Read Failed");
-        vTaskDelay(pdMS_TO_TICKS(50));
-
-        // [1Byte PID] PID 149 (PID_RETURN_TYPE)
-        ret_rx = MdRobot_Get_PID_1Byte(149, &val8);
-        if (ret_rx == ESP_OK) ESP_LOGI("RS485", "PID 149 (PID_RETURN_TYPE): %d (0x%02X)", val8, val8);
-        else ESP_LOGE("RS485", "PID 149 Read Failed");
-        vTaskDelay(pdMS_TO_TICKS(50));
-
-        // [2Byte PID] PID 183 (Func Cmd Type)
-        ret_rx = MdRobot_Get_PID_2Byte(183, &val16);
-        if (ret_rx == ESP_OK) ESP_LOGI("RS485", "PID 183 (Func Cmd Type): %d (0x%04X)", val16, val16);
-        else ESP_LOGE("RS485", "PID 183 Read Failed");
-        vTaskDelay(pdMS_TO_TICKS(50));
-
-        // [2Byte PID] PID 185 (PID_COM_WATCH_DELAY)
-        ret_rx = MdRobot_Get_PID_2Byte(185, &val16);
-        if (ret_rx == ESP_OK) ESP_LOGI("RS485", "PID 185 (PID_COM_WATCH_DELAY): %d (0x%04X)", val16, val16);
-        else ESP_LOGE("RS485", "PID 185 Read Failed");
-        vTaskDelay(pdMS_TO_TICKS(50));
-
-        // [nByte PID] PID 205 (PID_TYPE)
-        ret_rx = MdRobot_Get_PID_NByte(205, (uint8_t*)rx_buf, 20);
-        if (ret_rx == ESP_OK) ESP_LOGI("RS485", "PID 205 (PID_TYPE): %s", rx_buf);
-        else ESP_LOGE("RS485", "PID 205 Read Failed");
-        vTaskDelay(pdMS_TO_TICKS(50));
-
-        // [모니터 데이터 읽기]
-        esp_err_t ret_rx = MdRobot_Read_Monitor_Data(&mon);
-
-        if (ret_rx == ESP_OK) {
-            ESP_LOGI("RS485", "RPM: %d/%d | POS: %ld/%ld | CUR: %.1f/%.1f", 
-                     mon.fb_rpm_l, mon.fb_rpm_r, 
-                     mon.pos_l, mon.pos_r,
-                     mon.current_l/10.0f, mon.current_r/10.0f);
-        } else {
-            ESP_LOGW("RS485", "Monitor Failed");
-        }
 
         vTaskDelay(pdMS_TO_TICKS(5000));
     }
