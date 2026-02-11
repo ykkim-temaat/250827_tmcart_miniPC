@@ -1604,33 +1604,6 @@ void test_mdrobot_drive_task(void *arg) {
     }
 }
 
-void print_cpu_usage_task(void *arg) {
-    char *stats_buffer = malloc(1024);
-    if (stats_buffer == NULL) {
-        ESP_LOGE("CPU", "Memory allocation failed");
-        vTaskDelete(NULL);
-    }
-
-    while (1) {
-        // 10초마다 출력
-        vTaskDelay(pdMS_TO_TICKS(10000));
-
-        // FreeRTOS가 제공하는 통계 함수 호출
-        // 각 태스크가 CPU를 얼마나 썼는지 절대 시간과 백분율(%)로 보여줍니다.
-        // IDLE0, IDLE1 태스크의 %를 보면 
-        // Core 0 사용률 = 100% - IDLE0%
-        // Core 1 사용률 = 100% - IDLE1% 
-        // 가 됩니다.
-        vTaskGetRunTimeStats(stats_buffer);
-        
-        printf("\n================ CPU USAGE STATS ================\n");
-        printf("Task\t\tAbs Time\t\t%% Time\n");
-        printf("-------------------------------------------------\n");
-        printf("%s", stats_buffer);
-        printf("=================================================\n");
-    }
-}
-
 void app_main(void) {
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -1667,8 +1640,6 @@ void app_main(void) {
     xTaskCreatePinnedToCore(hall_sensor_task, "hall_sensor_task", 4096, NULL, 2, NULL, CPU_NUM_1);
 
     xTaskCreatePinnedToCore(test_mdrobot_drive_task, "test_mdrobot_drive_task", 4096, NULL, 1, NULL, CPU_NUM_1);
-
-    // xTaskCreate(print_cpu_usage_task, "cpu_mon", 4096, NULL, 1, NULL);
 
     ESP_LOGI(TAG, "TMCart Control Firmware Version: %s \n\n", FIRMWARE_VERSION);
 }
