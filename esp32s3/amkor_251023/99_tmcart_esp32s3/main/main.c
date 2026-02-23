@@ -55,7 +55,7 @@
 #define ROS_AGENT_PORT     CONFIG_MICRO_ROS_AGENT_PORT
 
 static const char *TAG = "MAIN";
-static const char *FIRMWARE_VERSION = "TMCart_ESP32S3_v1.0.2_260203; improved driving stability at Amkor";
+static const char *FIRMWARE_VERSION = "TMCart_ESP32S3_v1.0.3_260206; Load Cell Initial Calibration Logic Added";
 
 typedef enum {
     CPU_NUM_0 = 0,
@@ -390,32 +390,118 @@ void md750t_ctrl_task(void *arg) {
     static float neutral_voltage_ch0 = 2.5f; // 초기화 전 기본값
     static float neutral_voltage_ch1 = 2.5f;
 
-    // 로드셀 초기 캘리브레이션 (setup 혹은 main loop 진입 전 실행 권장)
-    float sum_ch0 = 0.0f;
-    float sum_ch1 = 0.0f;
-    const int sample_count = 20;
-
+    // ===========================================================
+    // [Safety Improved] Load Cell Initial Calibration Logic
+    // ===========================================================
     
-    MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_A, set_voltage_ch0, false);
+    // 캘리브레이션 관련 상수 설정
+    const float CALIB_VALID_MIN = 2.30f;    // 유효성 검사 최소값
+    const float CALIB_VALID_MAX = 2.70f;    // 유효성 검사 최대값
+    const float CALIB_STABILITY_TH = 0.05f; // 안정화 판정 임계치 (Max - Min 차이)
+    const int CALIB_SAMPLES = 30;           // 샘플링 횟수 증가 (20 -> 30)
+    const int MAX_CALIB_RETRIES = 5;        // 최대 재시도 횟수
+
+    float final_avg_ch0 = 2.5f;
+    float final_avg_ch1 = 2.5f;
+    bool calibration_success = false;
+    int retry_cnt = 0;
+
+    // 캘리브레이션 실패 영구 저장 플래그
+    bool is_calibration_failed = false;
+
+    // 초기 DAC 설정 (안전을 위해 2.5V 중립 강제 출력)
+    MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_A, 2.5f, false);
     vTaskDelay(pdMS_TO_TICKS(10));
-    MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_B, set_voltage_ch1, false);
+    MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_B, 2.5f, false);
 
-    // 20회 샘플링하여 평균 계산 (약 2초 소요 예상 - 100ms * 20)
-    for (int i = 0; i < sample_count; i++) {
-        float temp_ch0, temp_ch1;
-        ADS1115_ReadVoltage(ADS1115_MUX_AIN0_GND, &temp_ch0);
-        vTaskDelay(pdMS_TO_TICKS(10));
-        ADS1115_ReadVoltage(ADS1115_MUX_AIN1_GND, &temp_ch1);
-        sum_ch0 += temp_ch0;
-        sum_ch1 += temp_ch1;
+    ESP_LOGI(TAG, ">>> Starting Load Cell Calibration...");
 
-        // 실제 환경에서는 delay(100) 등 딜레이가 필요할 수 있음
-        vTaskDelay(pdMS_TO_TICKS(100));
+    while (retry_cnt < MAX_CALIB_RETRIES) {
+        float sum_ch0 = 0.0f;
+        float sum_ch1 = 0.0f;
+        
+        // 안정도 판정을 위한 Min/Max 변수 초기화
+        float min_val_ch0 = 10.0f, max_val_ch0 = -10.0f;
+        float min_val_ch1 = 10.0f, max_val_ch1 = -10.0f;
+
+        // 샘플링 루프
+        for (int i = 0; i < CALIB_SAMPLES; i++) {
+            float temp_ch0, temp_ch1;
+            ADS1115_ReadVoltage(ADS1115_MUX_AIN0_GND, &temp_ch0);
+            vTaskDelay(pdMS_TO_TICKS(5)); // ADC 변환 시간 고려
+            ADS1115_ReadVoltage(ADS1115_MUX_AIN1_GND, &temp_ch1);
+            
+            sum_ch0 += temp_ch0;
+            sum_ch1 += temp_ch1;
+
+            // Update Min/Max for CH0
+            if (temp_ch0 < min_val_ch0) min_val_ch0 = temp_ch0;
+            if (temp_ch0 > max_val_ch0) max_val_ch0 = temp_ch0;
+
+            // Update Min/Max for CH1
+            if (temp_ch1 < min_val_ch1) min_val_ch1 = temp_ch1;
+            if (temp_ch1 > max_val_ch1) max_val_ch1 = temp_ch1;
+
+            vTaskDelay(pdMS_TO_TICKS(50)); // 샘플링 간격 (약 1.5초 소요)
+        }
+
+        float avg_ch0 = sum_ch0 / CALIB_SAMPLES;
+        float avg_ch1 = sum_ch1 / CALIB_SAMPLES;
+        
+        // 1. 안정화 판정 (Stability Check)
+        float stability_diff_ch0 = max_val_ch0 - min_val_ch0;
+        float stability_diff_ch1 = max_val_ch1 - min_val_ch1;
+        bool is_stable = (stability_diff_ch0 < CALIB_STABILITY_TH) && (stability_diff_ch1 < CALIB_STABILITY_TH);
+
+        // 2. 유효성 검사 (Validity Check)
+        bool is_valid_range = (avg_ch0 > CALIB_VALID_MIN && avg_ch0 < CALIB_VALID_MAX) &&
+                              (avg_ch1 > CALIB_VALID_MIN && avg_ch1 < CALIB_VALID_MAX);
+
+        if (is_stable && is_valid_range) {
+            final_avg_ch0 = avg_ch0;
+            final_avg_ch1 = avg_ch1;
+            calibration_success = true;
+            ESP_LOGI(TAG, "Calibration Success! Neutral CH0: %.3f V, CH1: %.3f V", final_avg_ch0, final_avg_ch1);
+            break; // 성공 시 루프 탈출
+        } else {
+            retry_cnt++;
+            ESP_LOGE(TAG, "Calibration Fail! Stable: %d (Diff: %.3f/%.3f), Valid: %d (Avg: %.3f/%.3f)", 
+                     is_stable, stability_diff_ch0, stability_diff_ch1, 
+                     is_valid_range, avg_ch0, avg_ch1);
+            vTaskDelay(pdMS_TO_TICKS(500)); // 재시도 전 대기
+        }
     }
 
-    neutral_voltage_ch0 = sum_ch0 / sample_count;
-    neutral_voltage_ch1 = sum_ch1 / sample_count;
-    ESP_LOGI(TAG, "neutral_voltage_ch0: %.2f V, ch1: %.2f V", neutral_voltage_ch0, neutral_voltage_ch1);
+    if (!calibration_success) {
+        // [Critical Error] 최종 실패 시 안전 조치
+        ESP_LOGE(TAG, "Calibration FAILED after retries. Entering SAFE MODE.");
+        
+        // 1. 중립값 강제 설정 (Safety Default)
+        neutral_voltage_ch0 = 2.50f;
+        neutral_voltage_ch1 = 2.50f;
+        
+        // 2. 주행 금지 플래그 활성화 (매우 중요)
+        prohibit_twist = true; 
+
+        // 3. 비상정지 DOUT 하드웨어 즉시 활성화 (HW 차단)
+        // Emergency Switch DOUT_07 (PCF8574 0x20, P6 0x40) -> HIGH(Active)
+        pcf8574_read_byte(PCF8574_ADDR_0x20, &input_20); 
+        input_20 = input_20 | 0x40;   // Set P6 to HIGH
+        pcf8574_write_byte(PCF8574_ADDR_0x20, input_20);
+        
+        // 4. 실패 상태 플래그 설정 (메인 루프에서 해제 방지용)
+        is_calibration_failed = true;
+        g_estop_state = true;
+
+    } else {
+        // 성공 시 정상 값 적용
+        neutral_voltage_ch0 = final_avg_ch0;
+        neutral_voltage_ch1 = final_avg_ch1;
+        
+        // 안전을 위해 1회 더 중립 출력
+        MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_A, neutral_voltage_ch0, false);
+        MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_B, neutral_voltage_ch1, false);
+    }
 
     while(1) {        
         unsigned long current_read_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
@@ -656,7 +742,8 @@ void md750t_ctrl_task(void *arg) {
             // 2. 제어 변수 설정
             float diff_step = 0.1f;       // 편차 스텝 (diff_step)
             float ramp_up_step = 0.01f;   // 가속 스텝
-            float ramp_dn_step = 0.02f;   // 감속 스텝 (가속보다 빠르게 멈춤)
+            float ramp_dn_step = 0.01f;   // 감속 스텝
+            // float ramp_dn_step = 0.02f;   // 감속 스텝 (가속보다 빠르게 멈춤)
 
             // 3. CH0 제어 로직 (역방향 제어: 입력 High -> 출력 Low)
             float diff_ch0 = read_voltage_ch0 - neutral_voltage_ch0;
@@ -926,19 +1013,21 @@ void md750t_ctrl_task(void *arg) {
             pcf8574_read_byte(PCF8574_ADDR_0x24, &input_24);
 
             // Emergency Switch DOUT_07, 0x20, P6 0x40
-            if (input_23 & 0x40 || g_rear_bumper_detected) { 
+            if (input_23 & 0x40 || g_rear_bumper_detected || is_calibration_failed) { 
                 pcf8574_read_byte(PCF8574_ADDR_0x20, &input_20); 
                 input_20 = input_20 | 0x40;   // Set P6 to HIGH (Active LOW)
-                pcf8574_write_byte(PCF8574_ADDR_0x20, input_20); 
-                // ESP_LOGD(TAG, "PCF8574(0x20) Output: 0x%02X", input_20);
-                // ESP_LOGD(TAG, "Emergency DETECTED -> OPEN for MD750T");
+                pcf8574_write_byte(PCF8574_ADDR_0x20, input_20);                 
+                if (!g_estop_state) {
+                     ESP_LOGE(TAG, "Emergency Stop Active! (Source: SW/HW/Calib)");
+                }
                 g_estop_state = true; // 상태 업데이트
             } else {  // EMG SW (Normal-Close)
                 pcf8574_read_byte(PCF8574_ADDR_0x20, &input_20); 
                 input_20 = input_20 & ~0x40;   // Set P6 to LOW (Active LOW)
-                pcf8574_write_byte(PCF8574_ADDR_0x20, input_20); 
-                // ESP_LOGD(TAG, "PCF8574(0x20) Output: 0x%02X", input_20);
-                // ESP_LOGD(TAG, "Emergency Normal -> CLOSE for MD750T");
+                pcf8574_write_byte(PCF8574_ADDR_0x20, input_20);                  
+                if (g_estop_state) {
+                     ESP_LOGE(TAG, "Emergency Stop Inactive! Resumed.");
+                }
                 g_estop_state = false; // 상태 업데이트
             }
 
