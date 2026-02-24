@@ -1,0 +1,14 @@
+{
+  "C_Cpp.intelliSenseEngine": "default",
+  "idf.port": "/dev/ttyUSB1",
+  "idf.flashType": "UART",
+  "idf.pythonInstallPath": "/usr/bin/python3",
+  "files.associations": {
+    "serial_transport.h": "c",
+    "pcf8574.h": "c",
+    "i2c_bus_manager.h": "c",
+    "i2c.h": "c",
+    "uros_network_interfaces.h": "c",
+    "rmw_microros.h": "c"
+  }
+}
