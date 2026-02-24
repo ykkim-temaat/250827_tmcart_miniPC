@@ -23,7 +23,20 @@ static ssize_t ch9344_tty_write(struct tty_struct *tty, const unsigned char *buf
 {
 ```
 
-## 드라이버 자동 로드 등록
+## 리눅스 커널 자동 업데이트 방지
+1. 현재 커널 패키지 잠금 설정
+``` bash
+sudo apt-mark hold linux-image-generic linux-headers-generic
+```
+(실행 후 linux-image-generic set on hold. 등의 메시지가 뜨면 성공)
+
+2. 백그라운드 무인 업데이트(Unattended-Upgrades) 완전 종료
+``` bash
+sudo dpkg-reconfigure -plow unattended-upgrades
+```
+*분홍색 화면이 뜨면 방향키로 **<No> (아니오)*를 선택하고 Enter를 누르시면 됩니다.
+
+## 드라이버 자동 로드 등록 (만약 리눅스 커널이 업데이트된 경우 이중 안전장치)
 시스템이 시작될 때마다 ch9344 or ch348 커널 모듈(드라이버)을 자동으로 메모리에 올리는 기능
 ```bash
 cd /home/temaat/tmcart/config
