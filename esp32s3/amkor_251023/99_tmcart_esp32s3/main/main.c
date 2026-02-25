@@ -38,6 +38,7 @@
 
 #include "esp_mac.h"
 #include "nvs_flash.h"
+#include "esp_heap_caps.h"  // Heap 메모리 확인용
 
 #include "i2c_bus_manager.h"
 #include "linear_actuator.h"
@@ -55,7 +56,7 @@
 #define ROS_AGENT_PORT     CONFIG_MICRO_ROS_AGENT_PORT
 
 static const char *TAG = "MAIN";
-static const char *FIRMWARE_VERSION = "TMCart_ESP32S3_v1.0.4_260224; 주행개선테스트";
+static const char *FIRMWARE_VERSION = "TMCart_ESP32S3_v1.0.5_260225; micro_ros_task->CPU0, Qos Best Effort(4 pub), CPU Monitoring Added";
 
 typedef enum {
     CPU_NUM_0 = 0,
@@ -282,12 +283,17 @@ void micro_ros_task(void *arg) {
     RCCHECK(rclc_node_init_default(&node, "tmcart_esp32_node", ROS_NAMESPACE, &support));
 
     // Initialize Publishers
-    RCCHECK(rclc_publisher_init_default(&z_pos_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "z_axis_position"));
-    RCCHECK(rclc_publisher_init_default(&x_pos_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "x_axis_position"));
-    RCCHECK(rclc_publisher_init_default(&battery_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "battery_voltage"));
-    
-    // 신규 통합 상태 Publisher 초기화
-    RCCHECK(rclc_publisher_init_default(&tmcart_status_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32), "tmcart_status_code"));
+    // RCCHECK(rclc_publisher_init_default(&z_pos_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "z_axis_position"));
+    // RCCHECK(rclc_publisher_init_default(&x_pos_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "x_axis_position"));
+    // RCCHECK(rclc_publisher_init_default(&battery_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "battery_voltage"));
+    // RCCHECK(rclc_publisher_init_default(&tmcart_status_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32), "tmcart_status_code"));
+
+    // Initialize Publishers 
+    // with Best Effort QoS for more real-time performance (optional, can be changed back to default if reliability is preferred) 
+    RCCHECK(rclc_publisher_init_best_effort(&z_pos_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "z_axis_position"));
+    RCCHECK(rclc_publisher_init_best_effort(&x_pos_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "x_axis_position"));
+    RCCHECK(rclc_publisher_init_best_effort(&battery_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "battery_voltage"));
+    RCCHECK(rclc_publisher_init_best_effort(&tmcart_status_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32), "tmcart_status_code"));
 
     RCCHECK(rclc_subscription_init_default(&subscriber, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Vector3), "tmcart_actuator_cmd"));
 
@@ -317,7 +323,8 @@ void micro_ros_task(void *arg) {
     while (1)
     {
         rclc_executor_spin_some(&executor, RCL_MS_TO_NS(100));
-        usleep(1000);
+        // usleep(1000);
+        vTaskDelay(pdMS_TO_TICKS(10)); // 10ms 대기하여 확실하게 IDLE 태스크 등에 CPU 양보
     }
 
     RCCHECK(rcl_subscription_fini(&subscriber, &node));
@@ -355,8 +362,8 @@ void md750t_ctrl_task(void *arg) {
 
     // float twist_left_vel = 0.0f;
     // float twist_right_vel = 0.0f;
-    float simple_cmd_vel_left = 0.0f;
-    float simple_cmd_vel_right = 0.0f;
+    float simple_cmd_vel_left = 2.5f;
+    float simple_cmd_vel_right = 2.5f;
 
     bool twist_mode = false;
     bool prohibit_twist = false;
@@ -910,7 +917,7 @@ void md750t_ctrl_task(void *arg) {
             // 5. Update MCP4728 (마지막 실행)
             MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_A, set_voltage_ch0, false);
             vTaskDelay(pdMS_TO_TICKS(10));
-            MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_B, set_voltage_ch1 + 0.01, false);  // 편차보정
+            MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_B, set_voltage_ch1, false);
             // ESP_LOGD(TAG, "set_voltage_ch0: %.2f V, ch1: %.2f V\n", set_voltage_ch0, set_voltage_ch1);
 
             // 6. 주행 상태 업데이트
@@ -1154,6 +1161,36 @@ void md750t_ctrl_task(void *arg) {
                 // ESP_LOGI(TAG, "Battery voltage is back to Normal status: %.2f V", g_battery_voltage);
                 over_charge_state_mode = false;
             }
+
+            // // ========================================================
+            // // [신규 추가] 시스템 리소스 상태 로깅 (10초 주기)
+            // // ========================================================
+            // ESP_LOGI("SYS_STAT", "=== System Resource Status ===");
+            
+            // // 1. 전체 가용 Heap 메모리 확인
+            // uint32_t free_heap = esp_get_free_heap_size();
+            // uint32_t min_free_heap = esp_get_minimum_free_heap_size();
+            // ESP_LOGI("SYS_STAT", "Free Heap: %lu bytes (Min Free: %lu bytes)", free_heap, min_free_heap);
+
+            // // 2. 태스크별 상태 및 스택 여유 공간 확인
+            // // 버퍼 사이즈는 태스크 개수에 따라 넉넉하게 512바이트 정도 동적 할당
+            // char *task_list_buf = malloc(512); 
+            // if (task_list_buf != NULL) {
+            //     vTaskList(task_list_buf);
+            //     ESP_LOGI("SYS_STAT", "\nTask Name\tState\tPrio\tStack\tNum\tCore\n%s", task_list_buf);
+            //     free(task_list_buf);
+            // }
+
+            // // 3. 태스크별 CPU 사용률(%) 확인
+            // char *task_stats_buf = malloc(512);
+            // if (task_stats_buf != NULL) {
+            //     vTaskGetRunTimeStats(task_stats_buf);
+            //     ESP_LOGI("SYS_STAT", "\nTask Name\tRun Time\tCPU %%\n%s", task_stats_buf);
+            //     free(task_stats_buf);
+            // }
+            // ESP_LOGI("SYS_STAT", "==============================");
+            
+            // // ========================================================
         }
 
         vTaskDelay(pdMS_TO_TICKS(20));
@@ -1297,7 +1334,8 @@ void app_main(void) {
     PCF8574_Init();
     pslh080_init();
 
-    xTaskCreate(micro_ros_task, "micro_ros_task", CONFIG_MICRO_ROS_APP_STACK, NULL, CONFIG_MICRO_ROS_APP_TASK_PRIO, NULL);
+    // xTaskCreate(micro_ros_task, "micro_ros_task", CONFIG_MICRO_ROS_APP_STACK, NULL, CONFIG_MICRO_ROS_APP_TASK_PRIO, NULL);
+    xTaskCreatePinnedToCore(micro_ros_task, "micro_ros_task", CONFIG_MICRO_ROS_APP_STACK, NULL, CONFIG_MICRO_ROS_APP_TASK_PRIO, NULL, CPU_NUM_0);
     xTaskCreatePinnedToCore(md750t_ctrl_task, "md750t_ctrl_task", 1024 * 4, NULL, 4, NULL, CPU_NUM_1);
     xTaskCreatePinnedToCore(linear_scale_task, "linear_scale_task", 4096, NULL, 3, NULL, CPU_NUM_1);
     xTaskCreatePinnedToCore(hall_sensor_task, "hall_sensor_task", 4096, NULL, 2, NULL, CPU_NUM_1);
