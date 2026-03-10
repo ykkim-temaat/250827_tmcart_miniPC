@@ -79,7 +79,7 @@ static rcl_init_options_t init_options;
 
 // ===========================================================
 static const char *TAG = "MAIN";
-static const char *FIRMWARE_VERSION = "TMCart_ESP32S3_v1.0.7_260227; micro-ros agent 통신 재연결 상태머신 추가";
+static const char *FIRMWARE_VERSION = "TMCart_ESP32S3_v1.0.8_260310; Emergeny Stop Z측/X축 정지 추가";
 
 typedef enum {
     CPU_NUM_0 = 0,
@@ -137,6 +137,7 @@ bool g_load2_detected = false;      // Load2 (FRONT) 상태 (true: Detected, fal
 bool g_rear_bumper_detected = false;      // REAR_BUMPER 상태 (true: Detected, false: Not Detected)
 bool g_docking_complete = false;      // Docking 상태 (true: Complete, false: Incomplete)
 bool g_clutch_on_state = false;       // Clutch 상태 (true: On, false: Off)
+bool g_calibration_failed = false;    // [신규] 캘리브레이션 실패 상태
 
 // ===========================================================
 // micro-ROS Publisher related
@@ -168,7 +169,8 @@ std_msgs__msg__Int32 tmcart_status_msg;
  * Bit 10	| (1 << 10) | rear_bumper_detected | 후면 범퍼 감지
  * Bit 11	| (1 << 11) | docking_complete | 도킹 완료
  * Bit 12	| (1 << 12) | clutch_on_state | CLUTCH 풀림 (사람에 의한 제어)
- * Bit 13-31 	-	예비 (Reserved)	-
+ * Bit 13	| (1 << 13) | calibration_failed | 캘리브레이션 실패
+ * Bit 14-31 	-	예비 (Reserved)	-
 **/
 
 // ===========================================================
@@ -245,6 +247,7 @@ void status_timer_callback(rcl_timer_t *timer, int64_t last_call_time)
         if (g_rear_bumper_detected)     { encoded_status |= (1 << 10); }
         if (g_docking_complete)     { encoded_status |= (1 << 11); }
         if (g_clutch_on_state)      { encoded_status |= (1 << 12); }
+        if (g_calibration_failed)  { encoded_status |= (1 << 13); }
 
         // 3. 인코딩된 값을 메시지에 담아 한 번만 발행
         tmcart_status_msg.data = encoded_status;
@@ -520,9 +523,6 @@ void md750t_ctrl_task(void *arg) {
     bool calibration_success = false;
     int retry_cnt = 0;
 
-    // 캘리브레이션 실패 영구 저장 플래그
-    bool is_calibration_failed = false;
-
     // 초기 DAC 설정 (안전을 위해 2.5V 중립 강제 출력)
     MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_A, 2.5f - CALIB_DIFF_CH0, false);
     vTaskDelay(pdMS_TO_TICKS(10));
@@ -596,16 +596,12 @@ void md750t_ctrl_task(void *arg) {
         
         // 2. 주행 금지 플래그 활성화 (매우 중요)
         prohibit_twist = true; 
-
-        // 3. 비상정지 DOUT 하드웨어 즉시 활성화 (HW 차단)
-        // Emergency Switch DOUT_07 (PCF8574 0x20, P6 0x40) -> HIGH(Active)
-        pcf8574_read_byte(PCF8574_ADDR_0x20, &input_20); 
-        input_20 = input_20 | 0x40;   // Set P6 to HIGH
-        pcf8574_write_byte(PCF8574_ADDR_0x20, input_20);
         
-        // 4. 실패 상태 플래그 설정 (메인 루프에서 해제 방지용)
-        is_calibration_failed = true;
-        g_estop_state = true;
+        // 3. 실패 상태 플래그 설정 
+        g_calibration_failed = true; // [수정] micro-ROS 발행용 플래그 추가
+        
+        // DOUT_07 HW 차단 및 EMO 플래그(g_estop_state) 셋팅은 
+        // 아래 1000ms 루프에서 일괄 통합 처리하므로 여기서 삭제 및 생략
 
     } else {
         // 성공 시 정상 값 적용
@@ -1050,7 +1046,7 @@ void md750t_ctrl_task(void *arg) {
             if (log_count++ % 10 == 0) { // 10회에 1회 로그 출력
                 // ESP_LOGD(TAG, "read_voltage_ch0: %.3f V, ch1: %.3f V", read_voltage_ch0, read_voltage_ch1);
                 // ESP_LOGD(TAG, "compare diff_ch0: %.3f V, ch1: %.3f V", diff_ch0, diff_ch1);
-                ESP_LOGD(TAG, "set_voltage_ch0: %.3f V, ch1: %.3f V", set_voltage_ch0, set_voltage_ch1);
+                // ESP_LOGD(TAG, "set_voltage_ch0: %.3f V, ch1: %.3f V", set_voltage_ch0, set_voltage_ch1);
             }
 
             // 6. 주행 상태 업데이트
@@ -1146,25 +1142,73 @@ void md750t_ctrl_task(void *arg) {
             last_ext_din_time = current_read_time;
             pcf8574_read_byte(PCF8574_ADDR_0x23, &input_23);
             pcf8574_read_byte(PCF8574_ADDR_0x24, &input_24);
+            
+            // ---------------------------------------------------------
+            // [수정] 1. HW EMO 스위치 동작 로직 (최우선 순위)
+            // ---------------------------------------------------------
+            bool current_emo_pressed = (input_23 & 0x40); // 0x40 Bit 6 감지
 
-            // Emergency Switch DOUT_07, 0x20, P6 0x40
-            if (input_23 & 0x40 || g_rear_bumper_detected || is_calibration_failed) { 
-                pcf8574_read_byte(PCF8574_ADDR_0x20, &input_20); 
-                input_20 = input_20 | 0x40;   // Set P6 to HIGH (Active LOW)
-                pcf8574_write_byte(PCF8574_ADDR_0x20, input_20);                 
-                if (!g_estop_state) {
-                     ESP_LOGE(TAG, "Emergency Stop Active! (Source: SW/HW/Calib)");
+            if (current_emo_pressed) {
+                if (!g_estop_state) { 
+                    ESP_LOGE(TAG, "EMO Switch PRESSED! Halting System.");
+                    g_estop_state = true;
+                    
+                    // Z축 즉시 멈춤 (I2C 직접 제어)
+                    L298N_PWM_Set_Speed_M1(0);
+                    pcf8574_read_byte(PCF8574_ADDR_0x27, &input_27);
+                    input_27 = (input_27 & ~0x01) & ~0x04;
+                    pcf8574_write_byte(PCF8574_ADDR_0x27, input_27);
+                    g_z_pos_cmd_status = MOVE_STOP;
+                    g_z_axis_moving = false;
+                    z_pos_error = 0.0f;
+
+                    // X축 즉시 멈춤 (I2C 직접 제어)
+                    L298N_PWM_Set_Speed_M2(0);
+                    input_27 = (input_27 & ~0x02) & ~0x08;
+                    pcf8574_write_byte(PCF8574_ADDR_0x27, input_27);
+                    g_x_pos_cmd_status = MOVE_STOP;
+                    g_x_axis_moving = false;
                 }
-                g_estop_state = true; // 상태 업데이트
-            } else {  // EMG SW (Normal-Close)
-                pcf8574_read_byte(PCF8574_ADDR_0x20, &input_20); 
-                input_20 = input_20 & ~0x40;   // Set P6 to LOW (Active LOW)
-                pcf8574_write_byte(PCF8574_ADDR_0x20, input_20);                  
+            } else {
                 if (g_estop_state) {
-                     ESP_LOGE(TAG, "Emergency Stop Inactive! Resumed.");
+                    // EMO 스위치가 눌려있다가 '해제'된 순간
+                    ESP_LOGW(TAG, "EMO Switch RELEASED! Restarting ESP32...");
+                    vTaskDelay(pdMS_TO_TICKS(500)); // 로그 출력 대기
+                    esp_restart(); // 시스템 즉시 재부팅 (초기화)
                 }
-                g_estop_state = false; // 상태 업데이트
             }
+
+            // ---------------------------------------------------------
+            // [수정] 2. 후면 범퍼 충돌 동작 로직 (Latch 방식)
+            // ---------------------------------------------------------
+            if ((input_24 & 0x40) == 0) { // Active LOW (0일 때 감지됨)
+                if (!g_rear_bumper_detected) {
+                    ESP_LOGE(TAG, "Rear Bumper DETECTED! System Latched.");
+                    g_rear_bumper_detected = true;
+                }
+            } 
+            // 해제 시 아무것도 안 함 (true 상태 유지 -> Latch)
+            // 오직 EMO 버튼을 통한 재부팅으로만 이 상태를 벗어날 수 있음.
+
+            // ---------------------------------------------------------
+            // [수정] 3. 물리적 비상정지 회로(DOUT_07) 제어 통합
+            // ---------------------------------------------------------
+            // 세 가지 치명적 에러 중 하나라도 걸려있다면 릴레이 차단
+            if (g_estop_state || g_rear_bumper_detected || g_calibration_failed) {
+                pcf8574_read_byte(PCF8574_ADDR_0x20, &input_20); 
+                if ((input_20 & 0x40) == 0) { // 이미 HIGH가 아닐 때만 I2C write 수행
+                    input_20 = input_20 | 0x40;   // Set P6 to HIGH (차단)
+                    pcf8574_write_byte(PCF8574_ADDR_0x20, input_20); 
+                }
+            } else {
+                pcf8574_read_byte(PCF8574_ADDR_0x20, &input_20); 
+                if ((input_20 & 0x40) != 0) {
+                    input_20 = input_20 & ~0x40;   // Set P6 to LOW (정상)
+                    pcf8574_write_byte(PCF8574_ADDR_0x20, input_20);  
+                }
+            }
+
+            // ---------------------------------------------------------
 
             // Detect Load1(rear, 안쪽)
             if (input_23 & 0x02) { 
@@ -1192,15 +1236,6 @@ void md750t_ctrl_task(void *arg) {
                 // ESP_LOGD(TAG, "Docking COMPLETE!");
                 g_docking_complete = true; // 상태 업데이트
 
-            }
-
-            // Detect REAR_BUMPER 
-            if (input_24 & 0x40) { 
-                // ESP_LOGD(TAG, "REAR_BUMPER NOT DETECTED!");
-                g_rear_bumper_detected = false; // 상태 업데이트
-            } else {                
-                // ESP_LOGD(TAG, "REAR_BUMPER DETECTED!");
-                g_rear_bumper_detected = true; // 상태 업데이트
             }
 
             // Detect Z-Home Sensor 
