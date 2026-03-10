@@ -39,6 +39,8 @@
 #include "esp_mac.h"
 #include "nvs_flash.h"
 #include "esp_heap_caps.h"  // Heap 메모리 확인용
+#include "esp_wifi.h"       // Wi-Fi 재연결시 MAC 주소 읽기용
+#include "esp_random.h"     // 랜덤 클라이언트 키 생성용
 
 #include "i2c_bus_manager.h"
 #include "linear_actuator.h"
@@ -55,8 +57,29 @@
 #define ROS_AGENT_IP       CONFIG_MICRO_ROS_AGENT_IP
 #define ROS_AGENT_PORT     CONFIG_MICRO_ROS_AGENT_PORT
 
+// ===========================================================
+// micro-ROS 상태 머신을 위한 Enum 및 매크로
+// ===========================================================
+typedef enum {
+    WAITING_AGENT,
+    AGENT_AVAILABLE,
+    AGENT_CONNECTED,
+    AGENT_DISCONNECTED
+} uros_state_t;
+
+// 실패 시 태스크를 죽이지 않고, 에러 로그를 띄운 뒤 false를 반환하여 안전하게 재시도하도록 수정
+#define INIT_CHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){ ESP_LOGE(TAG, "Failed init on line %d. Error: %d", __LINE__, (int)temp_rc); return false; }}
+
+// ROS 핵심 객체 전역 선언
+static rcl_allocator_t allocator;
+static rclc_support_t support;
+static rcl_node_t node;
+static rclc_executor_t executor;
+static rcl_init_options_t init_options;
+
+// ===========================================================
 static const char *TAG = "MAIN";
-static const char *FIRMWARE_VERSION = "TMCart_ESP32S3_v1.0.6_260225; 주행개선 테스트";
+static const char *FIRMWARE_VERSION = "TMCart_ESP32S3_v1.0.7_260227; micro-ros agent 통신 재연결 상태머신 추가";
 
 typedef enum {
     CPU_NUM_0 = 0,
@@ -246,95 +269,176 @@ void subscription_callback(const void *msgin)
     }
 }
 
-// micro ros processes tasks
-void micro_ros_task(void *arg) {
-    rcl_allocator_t allocator = rcl_get_default_allocator();
-    rclc_support_t support;
+// ===========================================================
+// ROS 엔티티 생성 함수
+// ===========================================================
+bool create_entities() {
+    allocator = rcl_get_default_allocator();
     
-    rcl_init_options_t init_options = rcl_get_zero_initialized_init_options();
-    RCCHECK(rcl_init_options_init(&init_options, allocator));
-    RCCHECK(rcl_init_options_set_domain_id(&init_options, ROS_DOMAIN_ID));
+    init_options = rcl_get_zero_initialized_init_options();
+    INIT_CHECK(rcl_init_options_init(&init_options, allocator));
+    INIT_CHECK(rcl_init_options_set_domain_id(&init_options, ROS_DOMAIN_ID));
+    
+    // IP 및 포트 커스텀 적용
     rmw_init_options_t *rmw_options = rcl_init_options_get_rmw_init_options(&init_options);
-    RCCHECK(rmw_uros_options_set_udp_address(ROS_AGENT_IP, ROS_AGENT_PORT, rmw_options));
+    INIT_CHECK(rmw_uros_options_set_udp_address(ROS_AGENT_IP, ROS_AGENT_PORT, rmw_options));
 
-    uint8_t mac[6];
-    esp_read_mac(mac, ESP_MAC_WIFI_STA);
-    uint32_t client_key = 0;
-    client_key |= (uint32_t)mac[2] << 24;
-    client_key |= (uint32_t)mac[3] << 16;
-    client_key |= (uint32_t)mac[4] << 8;
-    client_key |= (uint32_t)mac[5];
-    client_key = client_key + 21;
-    RCCHECK(rmw_uros_options_set_client_key(client_key, rmw_options));
+    // uint8_t mac[6];
+    // esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    // uint32_t client_key = 0;
+    // client_key |= (uint32_t)mac[2] << 24;
+    // client_key |= (uint32_t)mac[3] << 16;
+    // client_key |= (uint32_t)mac[4] << 8;
+    // client_key |= (uint32_t)mac[5];
+    // client_key = client_key + 21;
+    
+    // ESP32 리부팅 시 Stale Session 꼬임을 방지하기 위해 랜덤 세션 키 부여
+    uint32_t client_key = esp_random();
+    INIT_CHECK(rmw_uros_options_set_client_key(client_key, rmw_options));
 
-    uint8_t conn_agent_cnt = 0;
-    while (rclc_support_init_with_options(&support, 0, NULL, &init_options, &allocator) != RCL_RET_OK) {         
-        conn_agent_cnt++;
-        ESP_LOGI(TAG, "Connecting try #%d to agent... %s:%s", conn_agent_cnt, ROS_AGENT_IP, ROS_AGENT_PORT); 
-        if (conn_agent_cnt > 1) {
-            ESP_LOGE(TAG, "Failed to connect to agent. Please check the agent status.");
-            esp_restart();
+    // 1. [핵심] 여기서 원래 쓰시던 방식대로 Agent 접속을 직접 시도합니다. (가장 확실한 연결 확인법)
+    rcl_ret_t rc = rclc_support_init_with_options(&support, 0, NULL, &init_options, &allocator);
+    if (rc != RCL_RET_OK) {
+        return false;
+    }
+
+    // 2. 접속 성공 시 나머지 엔티티들 일괄 생성
+    INIT_CHECK(rclc_node_init_default(&node, "tmcart_esp32_node", ROS_NAMESPACE, &support));
+
+    INIT_CHECK(rclc_publisher_init_best_effort(&z_pos_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "z_axis_position"));
+    INIT_CHECK(rclc_publisher_init_best_effort(&x_pos_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "x_axis_position"));
+    INIT_CHECK(rclc_publisher_init_best_effort(&battery_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "battery_voltage"));
+    INIT_CHECK(rclc_publisher_init_best_effort(&tmcart_status_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32), "tmcart_status_code"));
+
+    INIT_CHECK(rclc_subscription_init_default(&subscriber, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Vector3), "tmcart_actuator_cmd"));
+
+    INIT_CHECK(rclc_timer_init_default(&z_pos_timer, &support, RCL_MS_TO_NS(100), z_pos_timer_callback));
+    INIT_CHECK(rclc_timer_init_default(&x_pos_timer, &support, RCL_MS_TO_NS(100), x_pos_timer_callback));
+    INIT_CHECK(rclc_timer_init_default(&battery_timer, &support, RCL_MS_TO_NS(10000), battery_timer_callback));
+    INIT_CHECK(rclc_timer_init_default(&status_timer, &support, RCL_MS_TO_NS(1000), status_timer_callback)); 
+
+    int handle_num = 5; 
+    INIT_CHECK(rclc_executor_init(&executor, &support.context, handle_num, &allocator));
+    INIT_CHECK(rclc_executor_set_timeout(&executor, RCL_MS_TO_NS(100)));
+
+    INIT_CHECK(rclc_executor_add_timer(&executor, &z_pos_timer));
+    INIT_CHECK(rclc_executor_add_timer(&executor, &x_pos_timer));
+    INIT_CHECK(rclc_executor_add_timer(&executor, &battery_timer));
+    INIT_CHECK(rclc_executor_add_timer(&executor, &status_timer)); 
+    INIT_CHECK(rclc_executor_add_subscription(&executor, &subscriber, &cmd_msg, &subscription_callback, ON_NEW_DATA));
+
+    return true;
+}
+
+// ===========================================================
+// ROS 엔티티 파괴 함수 (통신 단절 시 메모리 정리)
+// ===========================================================
+void destroy_entities() {
+    rmw_context_t *rmw_context = rcl_context_get_rmw_context(&support.context);
+    if (rmw_context != NULL) {
+        (void) rmw_uros_set_context_entity_destroy_session_timeout(rmw_context, 0); 
+    }
+
+    RCSOFTCHECK(rcl_subscription_fini(&subscriber, &node));
+    RCSOFTCHECK(rcl_publisher_fini(&tmcart_status_publisher, &node));
+    RCSOFTCHECK(rcl_publisher_fini(&battery_publisher, &node));
+    RCSOFTCHECK(rcl_publisher_fini(&x_pos_publisher, &node));
+    RCSOFTCHECK(rcl_publisher_fini(&z_pos_publisher, &node));
+    
+    RCSOFTCHECK(rcl_timer_fini(&z_pos_timer));
+    RCSOFTCHECK(rcl_timer_fini(&x_pos_timer));
+    RCSOFTCHECK(rcl_timer_fini(&battery_timer));
+    RCSOFTCHECK(rcl_timer_fini(&status_timer));
+    
+    RCSOFTCHECK(rclc_executor_fini(&executor));
+    RCSOFTCHECK(rcl_node_fini(&node));
+    RCSOFTCHECK(rclc_support_fini(&support));
+    RCSOFTCHECK(rcl_init_options_fini(&init_options));
+
+    // 다음 연결 시도시 꼬이지 않도록 모든 구조체를 0으로 명시적 초기화
+    memset(&support, 0, sizeof(rclc_support_t));
+    memset(&node, 0, sizeof(rcl_node_t));
+    memset(&executor, 0, sizeof(rclc_executor_t));
+    memset(&init_options, 0, sizeof(rcl_init_options_t));
+    memset(&z_pos_publisher, 0, sizeof(rcl_publisher_t));
+    memset(&x_pos_publisher, 0, sizeof(rcl_publisher_t));
+    memset(&battery_publisher, 0, sizeof(rcl_publisher_t));
+    memset(&tmcart_status_publisher, 0, sizeof(rcl_publisher_t));
+    memset(&subscriber, 0, sizeof(rcl_subscription_t));
+    memset(&z_pos_timer, 0, sizeof(rcl_timer_t));
+    memset(&x_pos_timer, 0, sizeof(rcl_timer_t));
+    memset(&battery_timer, 0, sizeof(rcl_timer_t));
+    memset(&status_timer, 0, sizeof(rcl_timer_t));
+    
+    ESP_LOGW(TAG, "All ROS entities destroyed and memory cleared.");
+}
+
+// ===========================================================
+// micro ros processes tasks (State Machine 적용)
+// ===========================================================
+void micro_ros_task(void *arg) {
+    uros_state_t state = WAITING_AGENT;
+    unsigned long last_ping_time = 0;
+
+    // 시작 전 확실하게 메모리 청소 (초기 1회)
+    memset(&support, 0, sizeof(rclc_support_t));
+    memset(&node, 0, sizeof(rcl_node_t));
+    memset(&executor, 0, sizeof(rclc_executor_t));
+    memset(&init_options, 0, sizeof(rcl_init_options_t));
+
+    while (1) {
+        switch (state) {
+            case WAITING_AGENT:
+                // 1. Wi-Fi 물리적 연결 상태부터 확인
+                wifi_ap_record_t ap_info;
+                if (esp_wifi_sta_get_ap_info(&ap_info) != ESP_OK) {
+                    // Wi-Fi가 끊어진 상태라면 ROS 연결 시도를 멈추고 Wi-Fi부터 재연결 시도
+                    ESP_LOGW(TAG, "Wi-Fi is disconnected! Forcing Wi-Fi reconnect...");
+                    esp_wifi_connect();
+                    vTaskDelay(pdMS_TO_TICKS(3000)); // Wi-Fi가 붙을 시간을 주기 위해 3초 대기
+                    break; // 이번 루프는 여기서 건너뜀
+                }
+
+                // Wi-Fi가 정상 연결된 상태에서만 Agent 접속 시도
+                ESP_LOGI(TAG, "Connecting to micro-ROS Agent...");
+                if (create_entities()) {
+                    ESP_LOGI(TAG, "Connected and entities created successfully.");
+                    state = AGENT_CONNECTED;
+                } else {
+                    ESP_LOGW(TAG, "Agent not reachable. Retrying...");
+                    destroy_entities(); // 실패한 쓰레기값 완벽 청소
+                    vTaskDelay(pdMS_TO_TICKS(1000));
+                }
+                break;
+
+            case AGENT_CONNECTED:
+                rclc_executor_spin_some(&executor, RCL_MS_TO_NS(100));
+
+                unsigned long current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+                
+                // 매 2초마다 커스텀 옵션(ROS_AGENT_IP)이 주입된 옵션으로 핑 테스트
+                if (current_time - last_ping_time > 2000) {
+                    rmw_init_options_t *rmw_opts = rcl_init_options_get_rmw_init_options(&init_options);
+                    // 옵션을 파라미터로 넘기는 커스텀 핑 함수 사용
+                    if (rmw_uros_ping_agent_options(1000, 2, rmw_opts) != RMW_RET_OK) {
+                        ESP_LOGE(TAG, "Connection lost! Agent didn't respond to Ping.");
+                        state = AGENT_DISCONNECTED;
+                    }
+                    last_ping_time = current_time;
+                }
+                break;
+
+            case AGENT_DISCONNECTED:
+                destroy_entities();
+                state = WAITING_AGENT;
+                break;
+
+            default:
+                break;
         }
-        vTaskDelay(pdMS_TO_TICKS(500)); 
+
+        vTaskDelay(pdMS_TO_TICKS(10)); // CPU 양보
     }
-    ESP_LOGI(TAG, "Connected to agent.");
-    
-    rcl_node_t node;
-    RCCHECK(rclc_node_init_default(&node, "tmcart_esp32_node", ROS_NAMESPACE, &support));
-
-    // Initialize Publishers
-    // RCCHECK(rclc_publisher_init_default(&z_pos_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "z_axis_position"));
-    // RCCHECK(rclc_publisher_init_default(&x_pos_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "x_axis_position"));
-    // RCCHECK(rclc_publisher_init_default(&battery_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "battery_voltage"));
-    // RCCHECK(rclc_publisher_init_default(&tmcart_status_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32), "tmcart_status_code"));
-
-    // Initialize Publishers 
-    // with Best Effort QoS for more real-time performance (optional, can be changed back to default if reliability is preferred) 
-    RCCHECK(rclc_publisher_init_best_effort(&z_pos_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "z_axis_position"));
-    RCCHECK(rclc_publisher_init_best_effort(&x_pos_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "x_axis_position"));
-    RCCHECK(rclc_publisher_init_best_effort(&battery_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "battery_voltage"));
-    RCCHECK(rclc_publisher_init_best_effort(&tmcart_status_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32), "tmcart_status_code"));
-
-    RCCHECK(rclc_subscription_init_default(&subscriber, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Vector3), "tmcart_actuator_cmd"));
-
-    const unsigned int z_pos_timer_timeout = 100;
-    const unsigned int x_pos_timer_timeout = 100;
-    const unsigned int battery_timer_timeout = 10000; 
-    const unsigned int status_timer_timeout = 1000; // 1000ms 주기로 상태 발행
-
-    RCCHECK(rclc_timer_init_default(&z_pos_timer, &support, RCL_MS_TO_NS(z_pos_timer_timeout), z_pos_timer_callback));
-    RCCHECK(rclc_timer_init_default(&x_pos_timer, &support, RCL_MS_TO_NS(x_pos_timer_timeout), x_pos_timer_callback));
-    RCCHECK(rclc_timer_init_default(&battery_timer, &support, RCL_MS_TO_NS(battery_timer_timeout), battery_timer_callback));
-    RCCHECK(rclc_timer_init_default(&status_timer, &support, RCL_MS_TO_NS(status_timer_timeout), status_timer_callback)); 
-
-    rclc_executor_t executor;    
-    int handle_num = 5; // 타이머 4개 + 구독 1개
-    RCCHECK(rclc_executor_init(&executor, &support.context, handle_num, &allocator));
-    unsigned int rcl_wait_timeout = 1000;
-    RCCHECK(rclc_executor_set_timeout(&executor, RCL_MS_TO_NS(rcl_wait_timeout)));
-
-    RCCHECK(rclc_executor_add_timer(&executor, &z_pos_timer));
-    RCCHECK(rclc_executor_add_timer(&executor, &x_pos_timer));
-    RCCHECK(rclc_executor_add_timer(&executor, &battery_timer));
-    RCCHECK(rclc_executor_add_timer(&executor, &status_timer)); 
-    
-    RCCHECK(rclc_executor_add_subscription(&executor, &subscriber, &cmd_msg, &subscription_callback, ON_NEW_DATA));
-
-    while (1)
-    {
-        rclc_executor_spin_some(&executor, RCL_MS_TO_NS(100));
-        // usleep(1000);
-        vTaskDelay(pdMS_TO_TICKS(10)); // 10ms 대기하여 확실하게 IDLE 태스크 등에 CPU 양보
-    }
-
-    RCCHECK(rcl_subscription_fini(&subscriber, &node));
-
-    RCCHECK(rcl_publisher_fini(&tmcart_status_publisher, &node));
-    RCCHECK(rcl_publisher_fini(&battery_publisher, &node));
-    RCCHECK(rcl_publisher_fini(&x_pos_publisher, &node));
-    RCCHECK(rcl_publisher_fini(&z_pos_publisher, &node));
-    RCCHECK(rcl_node_fini(&node));
-    vTaskDelete(NULL);
 }
 
 // MD750T Motor Driver Control Task
