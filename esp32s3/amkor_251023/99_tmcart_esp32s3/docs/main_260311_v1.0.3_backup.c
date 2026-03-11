@@ -38,9 +38,6 @@
 
 #include "esp_mac.h"
 #include "nvs_flash.h"
-#include "esp_heap_caps.h"  // Heap 메모리 확인용
-#include "esp_wifi.h"       // Wi-Fi 재연결시 MAC 주소 읽기용
-#include "esp_random.h"     // 랜덤 클라이언트 키 생성용
 
 #include "i2c_bus_manager.h"
 #include "linear_actuator.h"
@@ -57,29 +54,8 @@
 #define ROS_AGENT_IP       CONFIG_MICRO_ROS_AGENT_IP
 #define ROS_AGENT_PORT     CONFIG_MICRO_ROS_AGENT_PORT
 
-// ===========================================================
-// micro-ROS 상태 머신을 위한 Enum 및 매크로
-// ===========================================================
-typedef enum {
-    WAITING_AGENT,
-    AGENT_AVAILABLE,
-    AGENT_CONNECTED,
-    AGENT_DISCONNECTED
-} uros_state_t;
-
-// 실패 시 태스크를 죽이지 않고, 에러 로그를 띄운 뒤 false를 반환하여 안전하게 재시도하도록 수정
-#define INIT_CHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){ ESP_LOGE(TAG, "Failed init on line %d. Error: %d", __LINE__, (int)temp_rc); return false; }}
-
-// ROS 핵심 객체 전역 선언
-static rcl_allocator_t allocator;
-static rclc_support_t support;
-static rcl_node_t node;
-static rclc_executor_t executor;
-static rcl_init_options_t init_options;
-
-// ===========================================================
 static const char *TAG = "MAIN";
-static const char *FIRMWARE_VERSION = "TMCart_ESP32S3_v1.0.8_260310; Emergeny Stop Z측/X축 정지 추가";
+static const char *FIRMWARE_VERSION = "TMCart_ESP32S3_v1.0.3_260206; Load Cell Initial Calibration Logic Added";
 
 typedef enum {
     CPU_NUM_0 = 0,
@@ -137,7 +113,6 @@ bool g_load2_detected = false;      // Load2 (FRONT) 상태 (true: Detected, fal
 bool g_rear_bumper_detected = false;      // REAR_BUMPER 상태 (true: Detected, false: Not Detected)
 bool g_docking_complete = false;      // Docking 상태 (true: Complete, false: Incomplete)
 bool g_clutch_on_state = false;       // Clutch 상태 (true: On, false: Off)
-bool g_calibration_failed = false;    // [신규] 캘리브레이션 실패 상태
 
 // ===========================================================
 // micro-ROS Publisher related
@@ -169,8 +144,7 @@ std_msgs__msg__Int32 tmcart_status_msg;
  * Bit 10	| (1 << 10) | rear_bumper_detected | 후면 범퍼 감지
  * Bit 11	| (1 << 11) | docking_complete | 도킹 완료
  * Bit 12	| (1 << 12) | clutch_on_state | CLUTCH 풀림 (사람에 의한 제어)
- * Bit 13	| (1 << 13) | calibration_failed | 캘리브레이션 실패
- * Bit 14-31 	-	예비 (Reserved)	-
+ * Bit 13-31 	-	예비 (Reserved)	-
 **/
 
 // ===========================================================
@@ -247,7 +221,6 @@ void status_timer_callback(rcl_timer_t *timer, int64_t last_call_time)
         if (g_rear_bumper_detected)     { encoded_status |= (1 << 10); }
         if (g_docking_complete)     { encoded_status |= (1 << 11); }
         if (g_clutch_on_state)      { encoded_status |= (1 << 12); }
-        if (g_calibration_failed)  { encoded_status |= (1 << 13); }
 
         // 3. 인코딩된 값을 메시지에 담아 한 번만 발행
         tmcart_status_msg.data = encoded_status;
@@ -272,176 +245,89 @@ void subscription_callback(const void *msgin)
     }
 }
 
-// ===========================================================
-// ROS 엔티티 생성 함수
-// ===========================================================
-bool create_entities() {
-    allocator = rcl_get_default_allocator();
-    
-    init_options = rcl_get_zero_initialized_init_options();
-    INIT_CHECK(rcl_init_options_init(&init_options, allocator));
-    INIT_CHECK(rcl_init_options_set_domain_id(&init_options, ROS_DOMAIN_ID));
-    
-    // IP 및 포트 커스텀 적용
-    rmw_init_options_t *rmw_options = rcl_init_options_get_rmw_init_options(&init_options);
-    INIT_CHECK(rmw_uros_options_set_udp_address(ROS_AGENT_IP, ROS_AGENT_PORT, rmw_options));
-
-    // uint8_t mac[6];
-    // esp_read_mac(mac, ESP_MAC_WIFI_STA);
-    // uint32_t client_key = 0;
-    // client_key |= (uint32_t)mac[2] << 24;
-    // client_key |= (uint32_t)mac[3] << 16;
-    // client_key |= (uint32_t)mac[4] << 8;
-    // client_key |= (uint32_t)mac[5];
-    // client_key = client_key + 21;
-    
-    // ESP32 리부팅 시 Stale Session 꼬임을 방지하기 위해 랜덤 세션 키 부여
-    uint32_t client_key = esp_random();
-    INIT_CHECK(rmw_uros_options_set_client_key(client_key, rmw_options));
-
-    // 1. [핵심] 여기서 원래 쓰시던 방식대로 Agent 접속을 직접 시도합니다. (가장 확실한 연결 확인법)
-    rcl_ret_t rc = rclc_support_init_with_options(&support, 0, NULL, &init_options, &allocator);
-    if (rc != RCL_RET_OK) {
-        return false;
-    }
-
-    // 2. 접속 성공 시 나머지 엔티티들 일괄 생성
-    INIT_CHECK(rclc_node_init_default(&node, "tmcart_esp32_node", ROS_NAMESPACE, &support));
-
-    INIT_CHECK(rclc_publisher_init_best_effort(&z_pos_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "z_axis_position"));
-    INIT_CHECK(rclc_publisher_init_best_effort(&x_pos_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "x_axis_position"));
-    INIT_CHECK(rclc_publisher_init_best_effort(&battery_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "battery_voltage"));
-    INIT_CHECK(rclc_publisher_init_best_effort(&tmcart_status_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32), "tmcart_status_code"));
-
-    INIT_CHECK(rclc_subscription_init_default(&subscriber, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Vector3), "tmcart_actuator_cmd"));
-
-    INIT_CHECK(rclc_timer_init_default(&z_pos_timer, &support, RCL_MS_TO_NS(100), z_pos_timer_callback));
-    INIT_CHECK(rclc_timer_init_default(&x_pos_timer, &support, RCL_MS_TO_NS(100), x_pos_timer_callback));
-    INIT_CHECK(rclc_timer_init_default(&battery_timer, &support, RCL_MS_TO_NS(10000), battery_timer_callback));
-    INIT_CHECK(rclc_timer_init_default(&status_timer, &support, RCL_MS_TO_NS(1000), status_timer_callback)); 
-
-    int handle_num = 5; 
-    INIT_CHECK(rclc_executor_init(&executor, &support.context, handle_num, &allocator));
-    INIT_CHECK(rclc_executor_set_timeout(&executor, RCL_MS_TO_NS(100)));
-
-    INIT_CHECK(rclc_executor_add_timer(&executor, &z_pos_timer));
-    INIT_CHECK(rclc_executor_add_timer(&executor, &x_pos_timer));
-    INIT_CHECK(rclc_executor_add_timer(&executor, &battery_timer));
-    INIT_CHECK(rclc_executor_add_timer(&executor, &status_timer)); 
-    INIT_CHECK(rclc_executor_add_subscription(&executor, &subscriber, &cmd_msg, &subscription_callback, ON_NEW_DATA));
-
-    return true;
-}
-
-// ===========================================================
-// ROS 엔티티 파괴 함수 (통신 단절 시 메모리 정리)
-// ===========================================================
-void destroy_entities() {
-    rmw_context_t *rmw_context = rcl_context_get_rmw_context(&support.context);
-    if (rmw_context != NULL) {
-        (void) rmw_uros_set_context_entity_destroy_session_timeout(rmw_context, 0); 
-    }
-
-    RCSOFTCHECK(rcl_subscription_fini(&subscriber, &node));
-    RCSOFTCHECK(rcl_publisher_fini(&tmcart_status_publisher, &node));
-    RCSOFTCHECK(rcl_publisher_fini(&battery_publisher, &node));
-    RCSOFTCHECK(rcl_publisher_fini(&x_pos_publisher, &node));
-    RCSOFTCHECK(rcl_publisher_fini(&z_pos_publisher, &node));
-    
-    RCSOFTCHECK(rcl_timer_fini(&z_pos_timer));
-    RCSOFTCHECK(rcl_timer_fini(&x_pos_timer));
-    RCSOFTCHECK(rcl_timer_fini(&battery_timer));
-    RCSOFTCHECK(rcl_timer_fini(&status_timer));
-    
-    RCSOFTCHECK(rclc_executor_fini(&executor));
-    RCSOFTCHECK(rcl_node_fini(&node));
-    RCSOFTCHECK(rclc_support_fini(&support));
-    RCSOFTCHECK(rcl_init_options_fini(&init_options));
-
-    // 다음 연결 시도시 꼬이지 않도록 모든 구조체를 0으로 명시적 초기화
-    memset(&support, 0, sizeof(rclc_support_t));
-    memset(&node, 0, sizeof(rcl_node_t));
-    memset(&executor, 0, sizeof(rclc_executor_t));
-    memset(&init_options, 0, sizeof(rcl_init_options_t));
-    memset(&z_pos_publisher, 0, sizeof(rcl_publisher_t));
-    memset(&x_pos_publisher, 0, sizeof(rcl_publisher_t));
-    memset(&battery_publisher, 0, sizeof(rcl_publisher_t));
-    memset(&tmcart_status_publisher, 0, sizeof(rcl_publisher_t));
-    memset(&subscriber, 0, sizeof(rcl_subscription_t));
-    memset(&z_pos_timer, 0, sizeof(rcl_timer_t));
-    memset(&x_pos_timer, 0, sizeof(rcl_timer_t));
-    memset(&battery_timer, 0, sizeof(rcl_timer_t));
-    memset(&status_timer, 0, sizeof(rcl_timer_t));
-    
-    ESP_LOGW(TAG, "All ROS entities destroyed and memory cleared.");
-}
-
-// ===========================================================
-// micro ros processes tasks (State Machine 적용)
-// ===========================================================
+// micro ros processes tasks
 void micro_ros_task(void *arg) {
-    uros_state_t state = WAITING_AGENT;
-    unsigned long last_ping_time = 0;
+    rcl_allocator_t allocator = rcl_get_default_allocator();
+    rclc_support_t support;
+    
+    rcl_init_options_t init_options = rcl_get_zero_initialized_init_options();
+    RCCHECK(rcl_init_options_init(&init_options, allocator));
+    RCCHECK(rcl_init_options_set_domain_id(&init_options, ROS_DOMAIN_ID));
+    rmw_init_options_t *rmw_options = rcl_init_options_get_rmw_init_options(&init_options);
+    RCCHECK(rmw_uros_options_set_udp_address(ROS_AGENT_IP, ROS_AGENT_PORT, rmw_options));
 
-    // 시작 전 확실하게 메모리 청소 (초기 1회)
-    memset(&support, 0, sizeof(rclc_support_t));
-    memset(&node, 0, sizeof(rcl_node_t));
-    memset(&executor, 0, sizeof(rclc_executor_t));
-    memset(&init_options, 0, sizeof(rcl_init_options_t));
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    uint32_t client_key = 0;
+    client_key |= (uint32_t)mac[2] << 24;
+    client_key |= (uint32_t)mac[3] << 16;
+    client_key |= (uint32_t)mac[4] << 8;
+    client_key |= (uint32_t)mac[5];
+    client_key = client_key + 21;
+    RCCHECK(rmw_uros_options_set_client_key(client_key, rmw_options));
 
-    while (1) {
-        switch (state) {
-            case WAITING_AGENT:
-                // 1. Wi-Fi 물리적 연결 상태부터 확인
-                wifi_ap_record_t ap_info;
-                if (esp_wifi_sta_get_ap_info(&ap_info) != ESP_OK) {
-                    // Wi-Fi가 끊어진 상태라면 ROS 연결 시도를 멈추고 Wi-Fi부터 재연결 시도
-                    ESP_LOGW(TAG, "Wi-Fi is disconnected! Forcing Wi-Fi reconnect...");
-                    esp_wifi_connect();
-                    vTaskDelay(pdMS_TO_TICKS(3000)); // Wi-Fi가 붙을 시간을 주기 위해 3초 대기
-                    break; // 이번 루프는 여기서 건너뜀
-                }
-
-                // Wi-Fi가 정상 연결된 상태에서만 Agent 접속 시도
-                ESP_LOGI(TAG, "Connecting to micro-ROS Agent...");
-                if (create_entities()) {
-                    ESP_LOGI(TAG, "Connected and entities created successfully.");
-                    state = AGENT_CONNECTED;
-                } else {
-                    ESP_LOGW(TAG, "Agent not reachable. Retrying...");
-                    destroy_entities(); // 실패한 쓰레기값 완벽 청소
-                    vTaskDelay(pdMS_TO_TICKS(1000));
-                }
-                break;
-
-            case AGENT_CONNECTED:
-                rclc_executor_spin_some(&executor, RCL_MS_TO_NS(100));
-
-                unsigned long current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
-                
-                // 매 2초마다 커스텀 옵션(ROS_AGENT_IP)이 주입된 옵션으로 핑 테스트
-                if (current_time - last_ping_time > 2000) {
-                    rmw_init_options_t *rmw_opts = rcl_init_options_get_rmw_init_options(&init_options);
-                    // 옵션을 파라미터로 넘기는 커스텀 핑 함수 사용
-                    if (rmw_uros_ping_agent_options(1000, 2, rmw_opts) != RMW_RET_OK) {
-                        ESP_LOGE(TAG, "Connection lost! Agent didn't respond to Ping.");
-                        state = AGENT_DISCONNECTED;
-                    }
-                    last_ping_time = current_time;
-                }
-                break;
-
-            case AGENT_DISCONNECTED:
-                destroy_entities();
-                state = WAITING_AGENT;
-                break;
-
-            default:
-                break;
+    uint8_t conn_agent_cnt = 0;
+    while (rclc_support_init_with_options(&support, 0, NULL, &init_options, &allocator) != RCL_RET_OK) {         
+        conn_agent_cnt++;
+        ESP_LOGI(TAG, "Connecting try #%d to agent... %s:%s", conn_agent_cnt, ROS_AGENT_IP, ROS_AGENT_PORT); 
+        if (conn_agent_cnt > 1) {
+            ESP_LOGE(TAG, "Failed to connect to agent. Please check the agent status.");
+            esp_restart();
         }
-
-        vTaskDelay(pdMS_TO_TICKS(10)); // CPU 양보
+        vTaskDelay(pdMS_TO_TICKS(500)); 
     }
+    ESP_LOGI(TAG, "Connected to agent.");
+    
+    rcl_node_t node;
+    RCCHECK(rclc_node_init_default(&node, "tmcart_esp32_node", ROS_NAMESPACE, &support));
+
+    // Initialize Publishers
+    RCCHECK(rclc_publisher_init_default(&z_pos_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "z_axis_position"));
+    RCCHECK(rclc_publisher_init_default(&x_pos_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "x_axis_position"));
+    RCCHECK(rclc_publisher_init_default(&battery_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "battery_voltage"));
+    
+    // 신규 통합 상태 Publisher 초기화
+    RCCHECK(rclc_publisher_init_default(&tmcart_status_publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32), "tmcart_status_code"));
+
+    RCCHECK(rclc_subscription_init_default(&subscriber, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Vector3), "tmcart_actuator_cmd"));
+
+    const unsigned int z_pos_timer_timeout = 100;
+    const unsigned int x_pos_timer_timeout = 100;
+    const unsigned int battery_timer_timeout = 10000; 
+    const unsigned int status_timer_timeout = 1000; // 1000ms 주기로 상태 발행
+
+    RCCHECK(rclc_timer_init_default(&z_pos_timer, &support, RCL_MS_TO_NS(z_pos_timer_timeout), z_pos_timer_callback));
+    RCCHECK(rclc_timer_init_default(&x_pos_timer, &support, RCL_MS_TO_NS(x_pos_timer_timeout), x_pos_timer_callback));
+    RCCHECK(rclc_timer_init_default(&battery_timer, &support, RCL_MS_TO_NS(battery_timer_timeout), battery_timer_callback));
+    RCCHECK(rclc_timer_init_default(&status_timer, &support, RCL_MS_TO_NS(status_timer_timeout), status_timer_callback)); 
+
+    rclc_executor_t executor;    
+    int handle_num = 5; // 타이머 4개 + 구독 1개
+    RCCHECK(rclc_executor_init(&executor, &support.context, handle_num, &allocator));
+    unsigned int rcl_wait_timeout = 1000;
+    RCCHECK(rclc_executor_set_timeout(&executor, RCL_MS_TO_NS(rcl_wait_timeout)));
+
+    RCCHECK(rclc_executor_add_timer(&executor, &z_pos_timer));
+    RCCHECK(rclc_executor_add_timer(&executor, &x_pos_timer));
+    RCCHECK(rclc_executor_add_timer(&executor, &battery_timer));
+    RCCHECK(rclc_executor_add_timer(&executor, &status_timer)); 
+    
+    RCCHECK(rclc_executor_add_subscription(&executor, &subscriber, &cmd_msg, &subscription_callback, ON_NEW_DATA));
+
+    while (1)
+    {
+        rclc_executor_spin_some(&executor, RCL_MS_TO_NS(100));
+        usleep(1000);
+    }
+
+    RCCHECK(rcl_subscription_fini(&subscriber, &node));
+
+    RCCHECK(rcl_publisher_fini(&tmcart_status_publisher, &node));
+    RCCHECK(rcl_publisher_fini(&battery_publisher, &node));
+    RCCHECK(rcl_publisher_fini(&x_pos_publisher, &node));
+    RCCHECK(rcl_publisher_fini(&z_pos_publisher, &node));
+    RCCHECK(rcl_node_fini(&node));
+    vTaskDelete(NULL);
 }
 
 // MD750T Motor Driver Control Task
@@ -469,8 +355,8 @@ void md750t_ctrl_task(void *arg) {
 
     // float twist_left_vel = 0.0f;
     // float twist_right_vel = 0.0f;
-    float simple_cmd_vel_left = 2.5f;
-    float simple_cmd_vel_right = 2.5f;
+    float simple_cmd_vel_left = 0.0f;
+    float simple_cmd_vel_right = 0.0f;
 
     bool twist_mode = false;
     bool prohibit_twist = false;
@@ -515,18 +401,18 @@ void md750t_ctrl_task(void *arg) {
     const int CALIB_SAMPLES = 30;           // 샘플링 횟수 증가 (20 -> 30)
     const int MAX_CALIB_RETRIES = 5;        // 최대 재시도 횟수
 
-    const float CALIB_DIFF_CH0 = 0.0106f;  // CH0 캘리브레이션 보정값 (R155)
-    const float CALIB_DIFF_CH1 = 0.0029f;  // CH1 캘리브레이션 보정값 (R156)
-
     float final_avg_ch0 = 2.5f;
     float final_avg_ch1 = 2.5f;
     bool calibration_success = false;
     int retry_cnt = 0;
 
+    // 캘리브레이션 실패 영구 저장 플래그
+    bool is_calibration_failed = false;
+
     // 초기 DAC 설정 (안전을 위해 2.5V 중립 강제 출력)
-    MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_A, 2.5f - CALIB_DIFF_CH0, false);
+    MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_A, 2.5f, false);
     vTaskDelay(pdMS_TO_TICKS(10));
-    MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_B, 2.5f - CALIB_DIFF_CH1, false);
+    MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_B, 2.5f, false);
 
     ESP_LOGI(TAG, ">>> Starting Load Cell Calibration...");
 
@@ -596,12 +482,16 @@ void md750t_ctrl_task(void *arg) {
         
         // 2. 주행 금지 플래그 활성화 (매우 중요)
         prohibit_twist = true; 
+
+        // 3. 비상정지 DOUT 하드웨어 즉시 활성화 (HW 차단)
+        // Emergency Switch DOUT_07 (PCF8574 0x20, P6 0x40) -> HIGH(Active)
+        pcf8574_read_byte(PCF8574_ADDR_0x20, &input_20); 
+        input_20 = input_20 | 0x40;   // Set P6 to HIGH
+        pcf8574_write_byte(PCF8574_ADDR_0x20, input_20);
         
-        // 3. 실패 상태 플래그 설정 
-        g_calibration_failed = true; // [수정] micro-ROS 발행용 플래그 추가
-        
-        // DOUT_07 HW 차단 및 EMO 플래그(g_estop_state) 셋팅은 
-        // 아래 1000ms 루프에서 일괄 통합 처리하므로 여기서 삭제 및 생략
+        // 4. 실패 상태 플래그 설정 (메인 루프에서 해제 방지용)
+        is_calibration_failed = true;
+        g_estop_state = true;
 
     } else {
         // 성공 시 정상 값 적용
@@ -609,8 +499,8 @@ void md750t_ctrl_task(void *arg) {
         neutral_voltage_ch1 = final_avg_ch1;
         
         // 안전을 위해 1회 더 중립 출력
-        MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_A, 2.5f - CALIB_DIFF_CH0, false);
-        MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_B, 2.5f - CALIB_DIFF_CH1, false);
+        MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_A, neutral_voltage_ch0, false);
+        MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_B, neutral_voltage_ch1, false);
     }
 
     while(1) {        
@@ -850,150 +740,141 @@ void md750t_ctrl_task(void *arg) {
             // ESP_LOGD(TAG, "neutral_voltage_ch0: %.2f V, ch1: %.2f V", neutral_voltage_ch0, neutral_voltage_ch1);
 
             // 2. 제어 변수 설정
-            const float diff_step = 0.1f;       // 편차 스텝 (diff_step)
-            const float ramp_up_step = 0.01f;   // 가속 스텝
-            // const float ramp_dn_step = 0.01f;   // 감속 스텝
-            const float ramp_dn_step = 0.02f;   // 감속 스텝 (가속보다 빠르게 멈춤)
-
-            const float FORWARD_THRESHOLD = 2.2f;   // 전진 명령 임계값 
-            const float BACKWARD_THRESHOLD = 2.8f;  // 후진 명령 임계값 
-            const float STOP_VALUE = 2.5f;      // 중립 명령값
+            float diff_step = 0.1f;       // 편차 스텝 (diff_step)
+            float ramp_up_step = 0.01f;   // 가속 스텝
+            float ramp_dn_step = 0.01f;   // 감속 스텝
+            // float ramp_dn_step = 0.02f;   // 감속 스텝 (가속보다 빠르게 멈춤)
 
             // 3. CH0 제어 로직 (역방향 제어: 입력 High -> 출력 Low)
             float diff_ch0 = read_voltage_ch0 - neutral_voltage_ch0;
-            float diff_ch1 = read_voltage_ch1 - neutral_voltage_ch1;  
-            
-            // 반응하지 않는 구간 건너뛰기
-            if (read_voltage_ch0 > FORWARD_THRESHOLD && read_voltage_ch0 < neutral_voltage_ch0) {
-                set_voltage_ch0 = FORWARD_THRESHOLD;
-            } else if (read_voltage_ch0 > neutral_voltage_ch0 && read_voltage_ch0 < BACKWARD_THRESHOLD) {
-                set_voltage_ch0 = BACKWARD_THRESHOLD;
-            }
-            
-            if (diff_ch0 > diff_step) { // 로드셀 입력에 차이가 있으면 출력 조정 (가속 스텝)
-                set_voltage_ch0 += ramp_up_step;    
+
+            if (diff_ch0 > diff_step) {
+                // 반응하지 않는 구간 건너뛰기 (2.2V ~ 2.5V, 2.5V ~ 2.8V)
+                if (set_voltage_ch0 > 2.2f && set_voltage_ch0 < 2.5f) {
+                    set_voltage_ch0 = 2.2f;
+                } else if (set_voltage_ch0 > 2.5f && set_voltage_ch0 < 2.8f) {
+                    set_voltage_ch0 = 2.8f;
+                }
+                // 입력이 기준보다 0.1V 이상 높음 -> 출력 감소 (후진 or 전진)
+                set_voltage_ch0 += ramp_up_step;
             } else if (diff_ch0 < -diff_step) {
-                set_voltage_ch0 -= ramp_up_step;               
-            } else { // 차이가 없으면 중립으로 천천히 복귀 (감속 스텝)
-                if (set_voltage_ch0 > STOP_VALUE) {   // 후진
+                // 반응하지 않는 구간 건너뛰기 (2.2V ~ 2.5V, 2.5V ~ 2.8V)
+                if (set_voltage_ch0 > 2.2f && set_voltage_ch0 < 2.5f) {
+                    set_voltage_ch0 = 2.2f;
+                } else if (set_voltage_ch0 > 2.5f && set_voltage_ch0 < 2.8f) {
+                    set_voltage_ch0 = 2.8f;
+                }
+                // 입력이 기준보다 0.1V 이상 낮음 -> 출력 증가
+                set_voltage_ch0 -= ramp_up_step;
+            } else {
+                if (set_voltage_ch0 > 2.5f) {
                     set_voltage_ch0 -= ramp_dn_step;
-                    if (set_voltage_ch0 < BACKWARD_THRESHOLD) set_voltage_ch0 = STOP_VALUE;
-                } else if (set_voltage_ch0 < STOP_VALUE) {    // 전진
+                    if (set_voltage_ch0 < 2.8f) set_voltage_ch0 = 2.5f;
+                } else if (set_voltage_ch0 < 2.5f) {
                     set_voltage_ch0 += ramp_dn_step;
-                    if (set_voltage_ch0 > FORWARD_THRESHOLD) set_voltage_ch0 = STOP_VALUE;
+                    if (set_voltage_ch0 > 2.2f) set_voltage_ch0 = 2.5f;
                 }
             }
-            
-            // 반응하지 않는 구간 건너뛰기
-            if (read_voltage_ch1 > FORWARD_THRESHOLD && read_voltage_ch1 < neutral_voltage_ch1) {
-                set_voltage_ch1 = FORWARD_THRESHOLD;
-            } else if (read_voltage_ch1 > neutral_voltage_ch1 && read_voltage_ch1 < BACKWARD_THRESHOLD) {
-                set_voltage_ch1 = BACKWARD_THRESHOLD;
-            }
 
-            if (diff_ch1 > diff_step) { // 로드셀 입력에 차이가 있으면 출력 조정 (가속 스텝)
+            // 4. CH1 제어 로직 (동일 로직)
+            float diff_ch1 = read_voltage_ch1 - neutral_voltage_ch1;
+
+            if (diff_ch1 > diff_step) {
+                // 반응하지 않는 구간 건너뛰기 (2.2V ~ 2.5V, 2.5V ~ 2.8V)
+                if (set_voltage_ch1 > 2.2f && set_voltage_ch1 < 2.5f) {
+                    set_voltage_ch1 = 2.2f;
+                } else if (set_voltage_ch1 > 2.5f && set_voltage_ch1 < 2.8f) {
+                    set_voltage_ch1 = 2.8f;
+                }
                 set_voltage_ch1 += ramp_up_step;
             } else if (diff_ch1 < -diff_step) {
+                // 반응하지 않는 구간 건너뛰기 (2.2V ~ 2.5V, 2.5V ~ 2.8V)
+                if (set_voltage_ch1 > 2.2f && set_voltage_ch1 < 2.5f) {
+                    set_voltage_ch1 = 2.2f;
+                } else if (set_voltage_ch1 > 2.5f && set_voltage_ch1 < 2.8f) {
+                    set_voltage_ch1 = 2.8f;
+                }
                 set_voltage_ch1 -= ramp_up_step;
-            } else { // 차이가 없으면 중립으로 천천히 복귀 (감속 스텝)
-                if (set_voltage_ch1 > STOP_VALUE) {   // 후진
+            } else {
+                if (set_voltage_ch1 > 2.5f) {
                     set_voltage_ch1 -= ramp_dn_step;
-                    if (set_voltage_ch1 < BACKWARD_THRESHOLD) set_voltage_ch1 = STOP_VALUE;
-                } else if (set_voltage_ch1 < STOP_VALUE) {    // 전진
+                    if (set_voltage_ch1 < 2.8f) set_voltage_ch1 = 2.5f;
+                } else if (set_voltage_ch1 < 2.5f) {
                     set_voltage_ch1 += ramp_dn_step;
-                    if (set_voltage_ch1 > FORWARD_THRESHOLD) set_voltage_ch1 = STOP_VALUE;
+                    if (set_voltage_ch1 > 2.2f) set_voltage_ch1 = 2.5f;
                 }
             }
 
-            // 주행조건: 한 손이면 회전, 양손이면 직진/후진 동일 속도
-            // if (set_voltage_ch0 <= FORWARD_THRESHOLD || set_voltage_ch1 <= FORWARD_THRESHOLD) {
-            //     float set_voltage_tmp = (set_voltage_ch0 + set_voltage_ch1) / 2.0f;
-            //     if (fabs(set_voltage_ch0 - neutral_voltage_ch0) < 0.1f) {
-            //         set_voltage_ch0 = neutral_voltage_ch0;
-            //         set_voltage_ch1 = FORWARD_THRESHOLD - 0.005f;  // 좌우 편차보정
-            //     } else if (fabs(set_voltage_ch1 - neutral_voltage_ch1) < 0.1f) {
-            //         set_voltage_ch0 = FORWARD_THRESHOLD;
-            //         set_voltage_ch1 = neutral_voltage_ch1;
-            //     } else {                    
-            //         set_voltage_ch0 = set_voltage_tmp;
-            //         set_voltage_ch1 = set_voltage_tmp;
-            //     }
-            //     // ESP_LOGI(TAG, "set_voltage_ch0 & ch1 limited to %.2f V", set_voltage_tmp);
-            // } else if (set_voltage_ch0 >= BACKWARD_THRESHOLD || set_voltage_ch1 >= BACKWARD_THRESHOLD) {
-            //     float set_voltage_tmp = (set_voltage_ch0 + set_voltage_ch1) / 2.0f; 
-            //     if (fabs(set_voltage_ch0 - neutral_voltage_ch0) < 0.1f) {
-            //         set_voltage_ch0 = neutral_voltage_ch0;
-            //         set_voltage_ch1 = BACKWARD_THRESHOLD;
-            //     } else if (fabs(set_voltage_ch1 - neutral_voltage_ch1) < 0.1f) {
-            //         set_voltage_ch0 = BACKWARD_THRESHOLD;
-            //         set_voltage_ch1 = neutral_voltage_ch1;
-            //     } else {                    
-            //         set_voltage_ch0 = set_voltage_tmp;
-            //         set_voltage_ch1 = set_voltage_tmp;
-            //     }
-            //     // ESP_LOGI(TAG, "set_voltage_ch0 & ch1 limited to %.2f V", set_voltage_tmp);
-            // } 
+            // ESP_LOGD(TAG, "set_voltage_ch0: %.2f V, ch1: %.2f V", set_voltage_ch0, set_voltage_ch1);
 
-            // // 전진속도 제한2
-            // if (set_voltage_ch0 <= FORWARD_THRESHOLD) {
-            //     set_voltage_ch0 = FORWARD_THRESHOLD;
-            //     ESP_LOGI(TAG, "set_voltage_ch0 limited to %.2f V", FORWARD_THRESHOLD);
-            // }
-            // if (set_voltage_ch1 <= FORWARD_THRESHOLD) {
-            //     set_voltage_ch1 = FORWARD_THRESHOLD;
-            //     ESP_LOGI(TAG, "set_voltage_ch1 limited to %.2f V", FORWARD_THRESHOLD);
-            // }  
+            // 전진속도 제한
+            if (set_voltage_ch0 < 2.19f || set_voltage_ch1 < 2.19f) {
+                float set_voltage_tmp = (set_voltage_ch0 + set_voltage_ch1) / 2.0f; 
+                set_voltage_ch0 = set_voltage_tmp;
+                set_voltage_ch1 = set_voltage_tmp;
+                ESP_LOGI(TAG, "set_voltage_ch0 & ch1 limited to %.2f V", set_voltage_tmp);
+            }
+
+            // 전진속도 제한
+            if (set_voltage_ch0 < 2.15) {
+                set_voltage_ch0 = 2.15f;
+                ESP_LOGI(TAG, "set_voltage_ch0 limited to 2.15f V");
+            }
+            if (set_voltage_ch1 < 2.15) {
+                set_voltage_ch1 = 2.15f;
+                ESP_LOGI(TAG, "set_voltage_ch1 limited to 2.15f V");
+            }  
 
             // 후진속도 제한
-            if (set_voltage_ch0 > BACKWARD_THRESHOLD) {
-                set_voltage_ch0 = BACKWARD_THRESHOLD + 0.005f;  // 좌우 편차보정
-                // ESP_LOGI(TAG, "set_voltage_ch0 limited to %.2f V", set_voltage_ch0);
+            if (set_voltage_ch0 > 2.81) {
+                set_voltage_ch0 = 2.81f;
+                ESP_LOGI(TAG, "set_voltage_ch0 limited to 2.81f V");
             }
-            if (set_voltage_ch1 > BACKWARD_THRESHOLD) {
-                set_voltage_ch1 = BACKWARD_THRESHOLD - 0.005f;  // 좌우 편차보정
-                // ESP_LOGI(TAG, "set_voltage_ch1 limited to %.2f V", set_voltage_ch1);
+            if (set_voltage_ch1 > 2.81) {
+                set_voltage_ch1 = 2.81f;
+                ESP_LOGI(TAG, "set_voltage_ch1 limited to 2.81f V");
             }            
+
+            // ESP_LOGD(TAG, "set_voltage_ch0: %.2f V, ch1: %.2f V\n", set_voltage_ch0, set_voltage_ch1);
 
             // Slow drive Mode 1 (Push-button)
             if (slow_drive_left_cnt > 0 && slow_drive_right_cnt > 0) { 
-                if (set_voltage_ch0 < 2.4f && set_voltage_ch1 < 2.4f) { // 둘 다 전진 명령이면 저속 전진
-                    set_voltage_ch0 = FORWARD_THRESHOLD; 
-                    set_voltage_ch1 = FORWARD_THRESHOLD;
-                } else if (set_voltage_ch0 > 2.6f && set_voltage_ch1 > 2.6f) { // 둘 다 후진 명령이면 저속 후진
-                    set_voltage_ch0 = BACKWARD_THRESHOLD + 0.005f;  // 좌우 편차보정
-                    set_voltage_ch1 = BACKWARD_THRESHOLD - 0.005f;  // 좌우 편차보정
-                } else {
-                    set_voltage_ch0 = STOP_VALUE; 
-                    set_voltage_ch1 = STOP_VALUE;
+                if (set_voltage_ch0 < 2.2f || set_voltage_ch1 < 2.2f) {
+                    set_voltage_ch0 = 2.19f;
+                    set_voltage_ch1 = 2.19f;
+                    ESP_LOGI(TAG, "Slow Drive Mode: FWD limited to 2.19f V");
+                } else if (set_voltage_ch0 > 2.8f || set_voltage_ch1 > 2.8f) {
+                    set_voltage_ch0 = 2.81f;
+                    set_voltage_ch1 = 2.81f;
+                    ESP_LOGI(TAG, "Slow Drive Mode: BACK limited to 2.81f V");
                 }
-                // ESP_LOGI(TAG, "Push-button Mode: set_voltage_ch0 & ch1 limited to %.2f V", set_voltage_tmp);
             }
 
             // Slow drive Mode 2 (RFID) 
-            // if (twist_mode == true) { 
-            //     if (set_voltage_ch0 <= FORWARD_THRESHOLD) {
-            //         set_voltage_ch0 = FORWARD_THRESHOLD;
-            //         ESP_LOGI(TAG, "Twist Mode: LEFT FWD limited to %.2f V", FORWARD_THRESHOLD);
-            //     } else if (set_voltage_ch0 >= BACKWARD_THRESHOLD) {
-            //         set_voltage_ch0 = BACKWARD_THRESHOLD;
-            //         ESP_LOGI(TAG, "Twist Mode: LEFT BACK limited to %.2f V", BACKWARD_THRESHOLD);
-            //     }
-            //     if (set_voltage_ch1 <= FORWARD_THRESHOLD) {
-            //         set_voltage_ch1 = FORWARD_THRESHOLD;
-            //         ESP_LOGI(TAG, "Twist Mode: RIGHT FWD limited to %.2f V", FORWARD_THRESHOLD);
-            //     } else if (set_voltage_ch1 >= BACKWARD_THRESHOLD) {
-            //         set_voltage_ch1 = BACKWARD_THRESHOLD;
-            //         ESP_LOGI(TAG, "Twist Mode: RIGHT BACK limited to %.2f V", BACKWARD_THRESHOLD);
-            //     }
-            // }
+            if (twist_mode == true) { 
+                if (set_voltage_ch0 < 2.2f) {
+                    set_voltage_ch0 = 2.19f;
+                    ESP_LOGI(TAG, "Twist Mode: LEFT FWD limited to 2.19f V");
+                } else if (set_voltage_ch0 > 2.8f) {
+                    set_voltage_ch0 = 2.81f;
+                    ESP_LOGI(TAG, "Twist Mode: LEFT BACK limited to 2.81f V");
+                }
+                if (set_voltage_ch1 < 2.2f) {
+                    set_voltage_ch1 = 2.19f;
+                    ESP_LOGI(TAG, "Twist Mode: RIGHT FWD limited to 2.19f V");
+                } else if (set_voltage_ch1 > 2.8f) {
+                    set_voltage_ch1 = 2.81f;
+                    ESP_LOGI(TAG, "Twist Mode: RIGHT BACK limited to 2.81f V");
+                }
+            }
 
             // // prohibit one-hand operation
-            // if (read_voltage_ch0 > 2.4f && read_voltage_ch0 < 2.6f) { 
-            //     set_voltage_ch1 = STOP_VALUE; 
+            // if (read_voltage_ch0 > 2.4 && read_voltage_ch0 < 2.6) { 
+            //     set_voltage_ch1 = 2.5; 
             // }
 
-            // if (read_voltage_ch1 > 2.4f && read_voltage_ch1 < 2.6f) { 
-            //     set_voltage_ch0 = STOP_VALUE; 
+            // if (read_voltage_ch1 > 2.4 && read_voltage_ch1 < 2.6) { 
+            //     set_voltage_ch0 = 2.5; 
             // }
 
             // simple cmd_vel (0x64)
@@ -1031,27 +912,15 @@ void md750t_ctrl_task(void *arg) {
                 set_voltage_ch1 = 2.5; 
             }
 
-            // if (set_voltage_ch1 < 2.4f) {
-            //     set_voltage_ch1 *= 1.002f;
-            // } else if (set_voltage_ch1 > 2.6f) {
-            //     set_voltage_ch1 *= 0.998f;
-            // }
-
             // 5. Update MCP4728 (마지막 실행)
-            MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_A, set_voltage_ch0 - CALIB_DIFF_CH0, false);
+            MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_A, set_voltage_ch0, false);
             vTaskDelay(pdMS_TO_TICKS(10));
-            MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_B, set_voltage_ch1 - CALIB_DIFF_CH1, false);
-
-            static int log_count = 0;
-            if (log_count++ % 10 == 0) { // 10회에 1회 로그 출력
-                // ESP_LOGD(TAG, "read_voltage_ch0: %.3f V, ch1: %.3f V", read_voltage_ch0, read_voltage_ch1);
-                // ESP_LOGD(TAG, "compare diff_ch0: %.3f V, ch1: %.3f V", diff_ch0, diff_ch1);
-                // ESP_LOGD(TAG, "set_voltage_ch0: %.3f V, ch1: %.3f V", set_voltage_ch0, set_voltage_ch1);
-            }
+            MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_B, set_voltage_ch1, false);
+            // ESP_LOGD(TAG, "set_voltage_ch0: %.2f V, ch1: %.2f V\n", set_voltage_ch0, set_voltage_ch1);
 
             // 6. 주행 상태 업데이트
             // 출력값이 2.5V(중립)와 거의 같으면 정지 상태로 간주
-            if (fabs(set_voltage_ch0 - 2.5f) < 0.1f && fabs(set_voltage_ch1 - 2.5f) < 0.1f) {
+            if (fabs(set_voltage_ch0 - 2.5f) < 0.01f && fabs(set_voltage_ch1 - 2.5f) < 0.01f) {
                 g_is_driving = false;
             } else {
                 g_is_driving = true;
@@ -1142,73 +1011,25 @@ void md750t_ctrl_task(void *arg) {
             last_ext_din_time = current_read_time;
             pcf8574_read_byte(PCF8574_ADDR_0x23, &input_23);
             pcf8574_read_byte(PCF8574_ADDR_0x24, &input_24);
-            
-            // ---------------------------------------------------------
-            // [수정] 1. HW EMO 스위치 동작 로직 (최우선 순위)
-            // ---------------------------------------------------------
-            bool current_emo_pressed = (input_23 & 0x40); // 0x40 Bit 6 감지
 
-            if (current_emo_pressed) {
-                if (!g_estop_state) { 
-                    ESP_LOGE(TAG, "EMO Switch PRESSED! Halting System.");
-                    g_estop_state = true;
-                    
-                    // Z축 즉시 멈춤 (I2C 직접 제어)
-                    L298N_PWM_Set_Speed_M1(0);
-                    pcf8574_read_byte(PCF8574_ADDR_0x27, &input_27);
-                    input_27 = (input_27 & ~0x01) & ~0x04;
-                    pcf8574_write_byte(PCF8574_ADDR_0x27, input_27);
-                    g_z_pos_cmd_status = MOVE_STOP;
-                    g_z_axis_moving = false;
-                    z_pos_error = 0.0f;
-
-                    // X축 즉시 멈춤 (I2C 직접 제어)
-                    L298N_PWM_Set_Speed_M2(0);
-                    input_27 = (input_27 & ~0x02) & ~0x08;
-                    pcf8574_write_byte(PCF8574_ADDR_0x27, input_27);
-                    g_x_pos_cmd_status = MOVE_STOP;
-                    g_x_axis_moving = false;
+            // Emergency Switch DOUT_07, 0x20, P6 0x40
+            if (input_23 & 0x40 || g_rear_bumper_detected || is_calibration_failed) { 
+                pcf8574_read_byte(PCF8574_ADDR_0x20, &input_20); 
+                input_20 = input_20 | 0x40;   // Set P6 to HIGH (Active LOW)
+                pcf8574_write_byte(PCF8574_ADDR_0x20, input_20);                 
+                if (!g_estop_state) {
+                     ESP_LOGE(TAG, "Emergency Stop Active! (Source: SW/HW/Calib)");
                 }
-            } else {
+                g_estop_state = true; // 상태 업데이트
+            } else {  // EMG SW (Normal-Close)
+                pcf8574_read_byte(PCF8574_ADDR_0x20, &input_20); 
+                input_20 = input_20 & ~0x40;   // Set P6 to LOW (Active LOW)
+                pcf8574_write_byte(PCF8574_ADDR_0x20, input_20);                  
                 if (g_estop_state) {
-                    // EMO 스위치가 눌려있다가 '해제'된 순간
-                    ESP_LOGW(TAG, "EMO Switch RELEASED! Restarting ESP32...");
-                    vTaskDelay(pdMS_TO_TICKS(500)); // 로그 출력 대기
-                    esp_restart(); // 시스템 즉시 재부팅 (초기화)
+                     ESP_LOGE(TAG, "Emergency Stop Inactive! Resumed.");
                 }
+                g_estop_state = false; // 상태 업데이트
             }
-
-            // ---------------------------------------------------------
-            // [수정] 2. 후면 범퍼 충돌 동작 로직 (Latch 방식)
-            // ---------------------------------------------------------
-            if ((input_24 & 0x40) == 0) { // Active LOW (0일 때 감지됨)
-                if (!g_rear_bumper_detected) {
-                    ESP_LOGE(TAG, "Rear Bumper DETECTED! System Latched.");
-                    g_rear_bumper_detected = true;
-                }
-            } 
-            // 해제 시 아무것도 안 함 (true 상태 유지 -> Latch)
-            // 오직 EMO 버튼을 통한 재부팅으로만 이 상태를 벗어날 수 있음.
-
-            // ---------------------------------------------------------
-            // [수정] 3. 물리적 비상정지 회로(DOUT_07) 제어 통합
-            // ---------------------------------------------------------
-            // 세 가지 치명적 에러 중 하나라도 걸려있다면 릴레이 차단
-            if (g_estop_state || g_rear_bumper_detected || g_calibration_failed) {
-                pcf8574_read_byte(PCF8574_ADDR_0x20, &input_20); 
-                if ((input_20 & 0x40) == 0) { // 이미 HIGH가 아닐 때만 I2C write 수행
-                    input_20 = input_20 | 0x40;   // Set P6 to HIGH (차단)
-                    pcf8574_write_byte(PCF8574_ADDR_0x20, input_20); 
-                }
-            } else {
-                pcf8574_read_byte(PCF8574_ADDR_0x20, &input_20); 
-                if ((input_20 & 0x40) != 0) {
-                    input_20 = input_20 & ~0x40;   // Set P6 to LOW (정상)
-                    pcf8574_write_byte(PCF8574_ADDR_0x20, input_20);  
-                }
-            }
-
-            // ---------------------------------------------------------
 
             // Detect Load1(rear, 안쪽)
             if (input_23 & 0x02) { 
@@ -1236,6 +1057,15 @@ void md750t_ctrl_task(void *arg) {
                 // ESP_LOGD(TAG, "Docking COMPLETE!");
                 g_docking_complete = true; // 상태 업데이트
 
+            }
+
+            // Detect REAR_BUMPER 
+            if (input_24 & 0x40) { 
+                // ESP_LOGD(TAG, "REAR_BUMPER NOT DETECTED!");
+                g_rear_bumper_detected = false; // 상태 업데이트
+            } else {                
+                // ESP_LOGD(TAG, "REAR_BUMPER DETECTED!");
+                g_rear_bumper_detected = true; // 상태 업데이트
             }
 
             // Detect Z-Home Sensor 
@@ -1329,36 +1159,6 @@ void md750t_ctrl_task(void *arg) {
                 // ESP_LOGI(TAG, "Battery voltage is back to Normal status: %.2f V", g_battery_voltage);
                 over_charge_state_mode = false;
             }
-
-            // // ========================================================
-            // // [신규 추가] 시스템 리소스 상태 로깅 (10초 주기)
-            // // ========================================================
-            // ESP_LOGI("SYS_STAT", "=== System Resource Status ===");
-            
-            // // 1. 전체 가용 Heap 메모리 확인
-            // uint32_t free_heap = esp_get_free_heap_size();
-            // uint32_t min_free_heap = esp_get_minimum_free_heap_size();
-            // ESP_LOGI("SYS_STAT", "Free Heap: %lu bytes (Min Free: %lu bytes)", free_heap, min_free_heap);
-
-            // // 2. 태스크별 상태 및 스택 여유 공간 확인
-            // // 버퍼 사이즈는 태스크 개수에 따라 넉넉하게 512바이트 정도 동적 할당
-            // char *task_list_buf = malloc(512); 
-            // if (task_list_buf != NULL) {
-            //     vTaskList(task_list_buf);
-            //     ESP_LOGI("SYS_STAT", "\nTask Name\tState\tPrio\tStack\tNum\tCore\n%s", task_list_buf);
-            //     free(task_list_buf);
-            // }
-
-            // // 3. 태스크별 CPU 사용률(%) 확인
-            // char *task_stats_buf = malloc(512);
-            // if (task_stats_buf != NULL) {
-            //     vTaskGetRunTimeStats(task_stats_buf);
-            //     ESP_LOGI("SYS_STAT", "\nTask Name\tRun Time\tCPU %%\n%s", task_stats_buf);
-            //     free(task_stats_buf);
-            // }
-            // ESP_LOGI("SYS_STAT", "==============================");
-            
-            // // ========================================================
         }
 
         vTaskDelay(pdMS_TO_TICKS(20));
@@ -1502,8 +1302,7 @@ void app_main(void) {
     PCF8574_Init();
     pslh080_init();
 
-    // xTaskCreate(micro_ros_task, "micro_ros_task", CONFIG_MICRO_ROS_APP_STACK, NULL, CONFIG_MICRO_ROS_APP_TASK_PRIO, NULL);
-    xTaskCreatePinnedToCore(micro_ros_task, "micro_ros_task", CONFIG_MICRO_ROS_APP_STACK, NULL, CONFIG_MICRO_ROS_APP_TASK_PRIO, NULL, CPU_NUM_0);
+    xTaskCreate(micro_ros_task, "micro_ros_task", CONFIG_MICRO_ROS_APP_STACK, NULL, CONFIG_MICRO_ROS_APP_TASK_PRIO, NULL);
     xTaskCreatePinnedToCore(md750t_ctrl_task, "md750t_ctrl_task", 1024 * 4, NULL, 4, NULL, CPU_NUM_1);
     xTaskCreatePinnedToCore(linear_scale_task, "linear_scale_task", 4096, NULL, 3, NULL, CPU_NUM_1);
     xTaskCreatePinnedToCore(hall_sensor_task, "hall_sensor_task", 4096, NULL, 2, NULL, CPU_NUM_1);
