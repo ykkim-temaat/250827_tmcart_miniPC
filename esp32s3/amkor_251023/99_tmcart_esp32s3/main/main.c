@@ -79,7 +79,7 @@ static rcl_init_options_t init_options;
 
 // ===========================================================
 static const char *TAG = "MAIN";
-static const char *FIRMWARE_VERSION = "TMCart_ESP32S3_v1.0.8_260310; Emergeny Stop Z측/X축 정지 추가";
+static const char *FIRMWARE_VERSION = "TMCart_ESP32S3_v1.0.9_260311; 주행개선 테스트";
 
 typedef enum {
     CPU_NUM_0 = 0,
@@ -515,18 +515,15 @@ void md750t_ctrl_task(void *arg) {
     const int CALIB_SAMPLES = 30;           // 샘플링 횟수 증가 (20 -> 30)
     const int MAX_CALIB_RETRIES = 5;        // 최대 재시도 횟수
 
-    const float CALIB_DIFF_CH0 = 0.0106f;  // CH0 캘리브레이션 보정값 (R155)
-    const float CALIB_DIFF_CH1 = 0.0029f;  // CH1 캘리브레이션 보정값 (R156)
-
     float final_avg_ch0 = 2.5f;
     float final_avg_ch1 = 2.5f;
     bool calibration_success = false;
     int retry_cnt = 0;
 
     // 초기 DAC 설정 (안전을 위해 2.5V 중립 강제 출력)
-    MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_A, 2.5f - CALIB_DIFF_CH0, false);
+    MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_A, 2.5f, false);
     vTaskDelay(pdMS_TO_TICKS(10));
-    MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_B, 2.5f - CALIB_DIFF_CH1, false);
+    MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_B, 2.5f, false);
 
     ESP_LOGI(TAG, ">>> Starting Load Cell Calibration...");
 
@@ -609,8 +606,8 @@ void md750t_ctrl_task(void *arg) {
         neutral_voltage_ch1 = final_avg_ch1;
         
         // 안전을 위해 1회 더 중립 출력
-        MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_A, 2.5f - CALIB_DIFF_CH0, false);
-        MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_B, 2.5f - CALIB_DIFF_CH1, false);
+        MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_A, 2.5f, false);
+        MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_B, 2.5f, false);
     }
 
     while(1) {        
@@ -619,7 +616,7 @@ void md750t_ctrl_task(void *arg) {
         // 큐에서 새로운 명령어가 있는지 확인 (비동기, 0ms 대기)
         // 기존 100ms 시간 제한 블록을 큐 확인 블록으로 대체
         if (xQueueReceive(g_ros_cmd_queue, &received_cmd, 0) == pdTRUE) {
-            ESP_LOGD(TAG, "New CMD from Q: 0x%02lX, val1: %.2f, val2: %.2f", received_cmd.cmd, received_cmd.val1, received_cmd.val2);
+            ESP_LOGD(TAG, "New CMD from Q: 0x%02lX, val1: %.3f, val2: %.3f", received_cmd.cmd, received_cmd.val1, received_cmd.val2);
             
             // 모든 g_ros_cmd, g_ros_val1, g_ros_val2를 received_cmd 구조체 멤버로 변경
             // Z_Axis Linear Actuator Command (Manual Control)
@@ -845,156 +842,126 @@ void md750t_ctrl_task(void *arg) {
             ADS1115_ReadVoltage(ADS1115_MUX_AIN0_GND, &read_voltage_ch0);
             vTaskDelay(pdMS_TO_TICKS(10));
             ADS1115_ReadVoltage(ADS1115_MUX_AIN1_GND, &read_voltage_ch1);
-            
-            // ESP_LOGD(TAG, "read_voltage_ch0: %.2f V, ch1: %.2f V", read_voltage_ch0, read_voltage_ch1);
-            // ESP_LOGD(TAG, "neutral_voltage_ch0: %.2f V, ch1: %.2f V", neutral_voltage_ch0, neutral_voltage_ch1);
 
             // 2. 제어 변수 설정
-            const float diff_step = 0.1f;       // 편차 스텝 (diff_step)
-            const float ramp_up_step = 0.01f;   // 가속 스텝
-            // const float ramp_dn_step = 0.01f;   // 감속 스텝
-            const float ramp_dn_step = 0.02f;   // 감속 스텝 (가속보다 빠르게 멈춤)
+            float diff_step = 0.1f;       // 편차 스텝 (diff_step)
+            float ramp_up_step = 0.005f;   // 가속 스텝
+            float ramp_dn_step = 0.01f;   // 감속 스텝
+            // float ramp_dn_step = 0.03f;   // 감속 스텝 (가속보다 빠르게 멈춤)
 
-            const float FORWARD_THRESHOLD = 2.2f;   // 전진 명령 임계값 
-            const float BACKWARD_THRESHOLD = 2.8f;  // 후진 명령 임계값 
+            const float CALIB_DIFF_CH0 = 0.005f;  // CH0 Right 오프셋 보정값 (R155)
+            const float CALIB_DIFF_CH1 = 0.000f;  // CH1 Left 오프셋 보정값 (R156)
+
+            const float FORWARD_THRESHOLD = 2.2f;   // 전진 명령 임계값
+            const float BACKWARD_THRESHOLD = 2.8f;  // 후진 명령 임계값
             const float STOP_VALUE = 2.5f;      // 중립 명령값
 
             // 3. CH0 제어 로직 (역방향 제어: 입력 High -> 출력 Low)
             float diff_ch0 = read_voltage_ch0 - neutral_voltage_ch0;
-            float diff_ch1 = read_voltage_ch1 - neutral_voltage_ch1;  
-            
-            // 반응하지 않는 구간 건너뛰기
-            if (read_voltage_ch0 > FORWARD_THRESHOLD && read_voltage_ch0 < neutral_voltage_ch0) {
-                set_voltage_ch0 = FORWARD_THRESHOLD;
-            } else if (read_voltage_ch0 > neutral_voltage_ch0 && read_voltage_ch0 < BACKWARD_THRESHOLD) {
-                set_voltage_ch0 = BACKWARD_THRESHOLD;
-            }
-            
-            if (diff_ch0 > diff_step) { // 로드셀 입력에 차이가 있으면 출력 조정 (가속 스텝)
-                set_voltage_ch0 += ramp_up_step;    
+
+            if (diff_ch0 > diff_step) {
+                // 반응하지 않는 구간 건너뛰기 
+                if (set_voltage_ch0 > FORWARD_THRESHOLD && set_voltage_ch0 < STOP_VALUE) {
+                    set_voltage_ch0 = FORWARD_THRESHOLD;
+                } else if (set_voltage_ch0 > STOP_VALUE && set_voltage_ch0 < BACKWARD_THRESHOLD) {
+                    set_voltage_ch0 = BACKWARD_THRESHOLD;
+                }
+                set_voltage_ch0 += ramp_up_step;
             } else if (diff_ch0 < -diff_step) {
-                set_voltage_ch0 -= ramp_up_step;               
-            } else { // 차이가 없으면 중립으로 천천히 복귀 (감속 스텝)
-                if (set_voltage_ch0 > STOP_VALUE) {   // 후진
+                // 반응하지 않는 구간 건너뛰기 
+                if (set_voltage_ch0 > FORWARD_THRESHOLD && set_voltage_ch0 < STOP_VALUE) {
+                    set_voltage_ch0 = FORWARD_THRESHOLD;
+                } else if (set_voltage_ch0 > STOP_VALUE && set_voltage_ch0 < BACKWARD_THRESHOLD) {
+                    set_voltage_ch0 = BACKWARD_THRESHOLD;
+                }
+                set_voltage_ch0 -= ramp_up_step;
+            } else {
+                if (set_voltage_ch0 > STOP_VALUE) {
                     set_voltage_ch0 -= ramp_dn_step;
                     if (set_voltage_ch0 < BACKWARD_THRESHOLD) set_voltage_ch0 = STOP_VALUE;
-                } else if (set_voltage_ch0 < STOP_VALUE) {    // 전진
+                } else if (set_voltage_ch0 < STOP_VALUE) {
                     set_voltage_ch0 += ramp_dn_step;
                     if (set_voltage_ch0 > FORWARD_THRESHOLD) set_voltage_ch0 = STOP_VALUE;
                 }
             }
-            
-            // 반응하지 않는 구간 건너뛰기
-            if (read_voltage_ch1 > FORWARD_THRESHOLD && read_voltage_ch1 < neutral_voltage_ch1) {
-                set_voltage_ch1 = FORWARD_THRESHOLD;
-            } else if (read_voltage_ch1 > neutral_voltage_ch1 && read_voltage_ch1 < BACKWARD_THRESHOLD) {
-                set_voltage_ch1 = BACKWARD_THRESHOLD;
-            }
 
-            if (diff_ch1 > diff_step) { // 로드셀 입력에 차이가 있으면 출력 조정 (가속 스텝)
+            // 4. CH1 제어 로직 (동일 로직)
+            float diff_ch1 = read_voltage_ch1 - neutral_voltage_ch1;
+
+            if (diff_ch1 > diff_step) {
+                // 반응하지 않는 구간 건너뛰기 
+                if (set_voltage_ch1 > FORWARD_THRESHOLD && set_voltage_ch1 < STOP_VALUE) {
+                    set_voltage_ch1 = FORWARD_THRESHOLD;
+                } else if (set_voltage_ch1 > STOP_VALUE && set_voltage_ch1 < BACKWARD_THRESHOLD) {
+                    set_voltage_ch1 = BACKWARD_THRESHOLD;
+                }
                 set_voltage_ch1 += ramp_up_step;
             } else if (diff_ch1 < -diff_step) {
+                // 반응하지 않는 구간 건너뛰기 
+                if (set_voltage_ch1 > FORWARD_THRESHOLD && set_voltage_ch1 < STOP_VALUE) {
+                    set_voltage_ch1 = FORWARD_THRESHOLD;
+                } else if (set_voltage_ch1 > STOP_VALUE && set_voltage_ch1 < BACKWARD_THRESHOLD) {
+                    set_voltage_ch1 = BACKWARD_THRESHOLD;
+                }
                 set_voltage_ch1 -= ramp_up_step;
-            } else { // 차이가 없으면 중립으로 천천히 복귀 (감속 스텝)
-                if (set_voltage_ch1 > STOP_VALUE) {   // 후진
+            } else {
+                if (set_voltage_ch1 > STOP_VALUE) {
                     set_voltage_ch1 -= ramp_dn_step;
                     if (set_voltage_ch1 < BACKWARD_THRESHOLD) set_voltage_ch1 = STOP_VALUE;
-                } else if (set_voltage_ch1 < STOP_VALUE) {    // 전진
+                } else if (set_voltage_ch1 < STOP_VALUE) {
                     set_voltage_ch1 += ramp_dn_step;
                     if (set_voltage_ch1 > FORWARD_THRESHOLD) set_voltage_ch1 = STOP_VALUE;
                 }
             }
 
-            // 주행조건: 한 손이면 회전, 양손이면 직진/후진 동일 속도
-            // if (set_voltage_ch0 <= FORWARD_THRESHOLD || set_voltage_ch1 <= FORWARD_THRESHOLD) {
-            //     float set_voltage_tmp = (set_voltage_ch0 + set_voltage_ch1) / 2.0f;
-            //     if (fabs(set_voltage_ch0 - neutral_voltage_ch0) < 0.1f) {
-            //         set_voltage_ch0 = neutral_voltage_ch0;
-            //         set_voltage_ch1 = FORWARD_THRESHOLD - 0.005f;  // 좌우 편차보정
-            //     } else if (fabs(set_voltage_ch1 - neutral_voltage_ch1) < 0.1f) {
-            //         set_voltage_ch0 = FORWARD_THRESHOLD;
-            //         set_voltage_ch1 = neutral_voltage_ch1;
-            //     } else {                    
-            //         set_voltage_ch0 = set_voltage_tmp;
-            //         set_voltage_ch1 = set_voltage_tmp;
-            //     }
-            //     // ESP_LOGI(TAG, "set_voltage_ch0 & ch1 limited to %.2f V", set_voltage_tmp);
-            // } else if (set_voltage_ch0 >= BACKWARD_THRESHOLD || set_voltage_ch1 >= BACKWARD_THRESHOLD) {
-            //     float set_voltage_tmp = (set_voltage_ch0 + set_voltage_ch1) / 2.0f; 
-            //     if (fabs(set_voltage_ch0 - neutral_voltage_ch0) < 0.1f) {
-            //         set_voltage_ch0 = neutral_voltage_ch0;
-            //         set_voltage_ch1 = BACKWARD_THRESHOLD;
-            //     } else if (fabs(set_voltage_ch1 - neutral_voltage_ch1) < 0.1f) {
-            //         set_voltage_ch0 = BACKWARD_THRESHOLD;
-            //         set_voltage_ch1 = neutral_voltage_ch1;
-            //     } else {                    
-            //         set_voltage_ch0 = set_voltage_tmp;
-            //         set_voltage_ch1 = set_voltage_tmp;
-            //     }
-            //     // ESP_LOGI(TAG, "set_voltage_ch0 & ch1 limited to %.2f V", set_voltage_tmp);
-            // } 
-
-            // // 전진속도 제한2
-            // if (set_voltage_ch0 <= FORWARD_THRESHOLD) {
-            //     set_voltage_ch0 = FORWARD_THRESHOLD;
-            //     ESP_LOGI(TAG, "set_voltage_ch0 limited to %.2f V", FORWARD_THRESHOLD);
-            // }
-            // if (set_voltage_ch1 <= FORWARD_THRESHOLD) {
-            //     set_voltage_ch1 = FORWARD_THRESHOLD;
-            //     ESP_LOGI(TAG, "set_voltage_ch1 limited to %.2f V", FORWARD_THRESHOLD);
-            // }  
-
-            // 후진속도 제한
-            if (set_voltage_ch0 > BACKWARD_THRESHOLD) {
-                set_voltage_ch0 = BACKWARD_THRESHOLD + 0.005f;  // 좌우 편차보정
-                // ESP_LOGI(TAG, "set_voltage_ch0 limited to %.2f V", set_voltage_ch0);
+            // CH0 (Right Wheel) 
+            if (set_voltage_ch0 <= FORWARD_THRESHOLD) { // 전진속도 제한
+                set_voltage_ch0 = FORWARD_THRESHOLD - CALIB_DIFF_CH0;
+                // ESP_LOGI(TAG, "set_voltage_ch0 limited to %.3f V", set_voltage_ch0);
+            } else if (set_voltage_ch0 >= BACKWARD_THRESHOLD) { // 후진속도 제한
+                set_voltage_ch0 = BACKWARD_THRESHOLD + CALIB_DIFF_CH0;
+                // ESP_LOGI(TAG, "set_voltage_ch0 limited to %.3f V", set_voltage_ch0);
             }
-            if (set_voltage_ch1 > BACKWARD_THRESHOLD) {
-                set_voltage_ch1 = BACKWARD_THRESHOLD - 0.005f;  // 좌우 편차보정
-                // ESP_LOGI(TAG, "set_voltage_ch1 limited to %.2f V", set_voltage_ch1);
-            }            
+
+            // CH1 (Left Wheel)
+            if (set_voltage_ch1 <= FORWARD_THRESHOLD) { // 전진속도 제한
+                set_voltage_ch1 = FORWARD_THRESHOLD - CALIB_DIFF_CH1;
+                // ESP_LOGI(TAG, "set_voltage_ch1 limited to %.3f V", set_voltage_ch1);
+            } else if (set_voltage_ch1 >= BACKWARD_THRESHOLD) { // 후진속도 제한
+                set_voltage_ch1 = BACKWARD_THRESHOLD + CALIB_DIFF_CH1;
+                // ESP_LOGI(TAG, "set_voltage_ch1 limited to %.3f V", set_voltage_ch1);
+            }
 
             // Slow drive Mode 1 (Push-button)
             if (slow_drive_left_cnt > 0 && slow_drive_right_cnt > 0) { 
-                if (set_voltage_ch0 < 2.4f && set_voltage_ch1 < 2.4f) { // 둘 다 전진 명령이면 저속 전진
-                    set_voltage_ch0 = FORWARD_THRESHOLD; 
-                    set_voltage_ch1 = FORWARD_THRESHOLD;
-                } else if (set_voltage_ch0 > 2.6f && set_voltage_ch1 > 2.6f) { // 둘 다 후진 명령이면 저속 후진
-                    set_voltage_ch0 = BACKWARD_THRESHOLD + 0.005f;  // 좌우 편차보정
-                    set_voltage_ch1 = BACKWARD_THRESHOLD - 0.005f;  // 좌우 편차보정
-                } else {
-                    set_voltage_ch0 = STOP_VALUE; 
-                    set_voltage_ch1 = STOP_VALUE;
+                if (set_voltage_ch0 <= FORWARD_THRESHOLD || set_voltage_ch1 <= FORWARD_THRESHOLD) {
+                    set_voltage_ch0 = FORWARD_THRESHOLD - CALIB_DIFF_CH0;
+                    set_voltage_ch1 = FORWARD_THRESHOLD + CALIB_DIFF_CH1;
+                    // ESP_LOGI(TAG, "Slow Drive Mode: FWD limited to %.3f V", set_voltage_ch0);
+                } else if (set_voltage_ch0 >= BACKWARD_THRESHOLD || set_voltage_ch1 >= BACKWARD_THRESHOLD) {
+                    set_voltage_ch0 = BACKWARD_THRESHOLD + CALIB_DIFF_CH0;
+                    set_voltage_ch1 = BACKWARD_THRESHOLD + CALIB_DIFF_CH1;
+                    // ESP_LOGI(TAG, "Slow Drive Mode: BACK limited to %.3f V", set_voltage_ch1);
                 }
-                // ESP_LOGI(TAG, "Push-button Mode: set_voltage_ch0 & ch1 limited to %.2f V", set_voltage_tmp);
             }
 
             // Slow drive Mode 2 (RFID) 
-            // if (twist_mode == true) { 
-            //     if (set_voltage_ch0 <= FORWARD_THRESHOLD) {
-            //         set_voltage_ch0 = FORWARD_THRESHOLD;
-            //         ESP_LOGI(TAG, "Twist Mode: LEFT FWD limited to %.2f V", FORWARD_THRESHOLD);
-            //     } else if (set_voltage_ch0 >= BACKWARD_THRESHOLD) {
-            //         set_voltage_ch0 = BACKWARD_THRESHOLD;
-            //         ESP_LOGI(TAG, "Twist Mode: LEFT BACK limited to %.2f V", BACKWARD_THRESHOLD);
-            //     }
-            //     if (set_voltage_ch1 <= FORWARD_THRESHOLD) {
-            //         set_voltage_ch1 = FORWARD_THRESHOLD;
-            //         ESP_LOGI(TAG, "Twist Mode: RIGHT FWD limited to %.2f V", FORWARD_THRESHOLD);
-            //     } else if (set_voltage_ch1 >= BACKWARD_THRESHOLD) {
-            //         set_voltage_ch1 = BACKWARD_THRESHOLD;
-            //         ESP_LOGI(TAG, "Twist Mode: RIGHT BACK limited to %.2f V", BACKWARD_THRESHOLD);
-            //     }
-            // }
-
-            // // prohibit one-hand operation
-            // if (read_voltage_ch0 > 2.4f && read_voltage_ch0 < 2.6f) { 
-            //     set_voltage_ch1 = STOP_VALUE; 
-            // }
-
-            // if (read_voltage_ch1 > 2.4f && read_voltage_ch1 < 2.6f) { 
-            //     set_voltage_ch0 = STOP_VALUE; 
-            // }
+            if (twist_mode == true) { 
+                // if (set_voltage_ch0 <= FORWARD_THRESHOLD) {
+                //     set_voltage_ch0 = FORWARD_THRESHOLD - CALIB_DIFF_CH0;
+                //     // ESP_LOGI(TAG, "Twist Mode: LEFT FWD limited to %.3f V", set_voltage_ch0);
+                // } else if (set_voltage_ch0 >= BACKWARD_THRESHOLD) {
+                //     set_voltage_ch0 = BACKWARD_THRESHOLD + CALIB_DIFF_CH0;
+                //     // ESP_LOGI(TAG, "Twist Mode: LEFT BACK limited to %.3f V", set_voltage_ch0);
+                // }
+                // if (set_voltage_ch1 <= FORWARD_THRESHOLD) {
+                //     set_voltage_ch1 = FORWARD_THRESHOLD - CALIB_DIFF_CH1;
+                //     // ESP_LOGI(TAG, "Twist Mode: RIGHT FWD limited to %.3f V", set_voltage_ch1);
+                // } else if (set_voltage_ch1 >= BACKWARD_THRESHOLD) {
+                //     set_voltage_ch1 = BACKWARD_THRESHOLD + CALIB_DIFF_CH1;
+                //     // ESP_LOGI(TAG, "Twist Mode: RIGHT BACK limited to %.3f V", set_voltage_ch1);
+                // }
+            }
 
             // simple cmd_vel (0x64)
             if (simple_cmd_vel == true) { 
@@ -1003,60 +970,37 @@ void md750t_ctrl_task(void *arg) {
                 
                 set_voltage_ch0 = simple_cmd_vel_left;
                 set_voltage_ch1 = simple_cmd_vel_right;
-                // simple_cmd_vel_count++;
-
-                // ESP_LOGD(TAG, "simple_cmd_vel_left: %.2f V, simple_cmd_vel_right: %.2f V", simple_cmd_vel_left, simple_cmd_vel_right);
-                // ESP_LOGD(TAG, "Simple cmd_vel ACTIVE, count: %d", simple_cmd_vel_count);
-
-                // if (simple_cmd_vel_count > 5) {
-                //     simple_cmd_vel_count = 1;
-                //     set_voltage_ch0 = 2.5f;
-                //     set_voltage_ch1 = 2.5f;
-                //     simple_cmd_vel = false; 
-                //     curr_ros_cmd = 0;
-                //     ESP_LOGD(TAG, "Simple cmd_vel TIMEOUT -> STOP");
-                // }
             }
             
             // prohibit twist (GUI에 의한 주행금지 명령)
             if (prohibit_twist == true) { 
-                set_voltage_ch0 = 2.5; 
-                set_voltage_ch1 = 2.5; 
+                set_voltage_ch0 = STOP_VALUE; 
+                set_voltage_ch1 = STOP_VALUE; 
             }
 
             // 전원 투입 후 5초 이내에는 무조건 정지명령
             if (current_read_time - md750t_start_time < 5000) { 
                 // ESP_LOGD(TAG, "current_read_time: %lu, md750t_start_time: %lu, diff: %lu", current_read_time, md750t_start_time, current_read_time - md750t_start_time);
-                set_voltage_ch0 = 2.5; 
-                set_voltage_ch1 = 2.5; 
+                set_voltage_ch0 = STOP_VALUE; 
+                set_voltage_ch1 = STOP_VALUE; 
             }
-
-            // if (set_voltage_ch1 < 2.4f) {
-            //     set_voltage_ch1 *= 1.002f;
-            // } else if (set_voltage_ch1 > 2.6f) {
-            //     set_voltage_ch1 *= 0.998f;
-            // }
 
             // 5. Update MCP4728 (마지막 실행)
-            MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_A, set_voltage_ch0 - CALIB_DIFF_CH0, false);
+            MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_A, set_voltage_ch0, false);
             vTaskDelay(pdMS_TO_TICKS(10));
-            MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_B, set_voltage_ch1 - CALIB_DIFF_CH1, false);
-
-            static int log_count = 0;
-            if (log_count++ % 10 == 0) { // 10회에 1회 로그 출력
-                // ESP_LOGD(TAG, "read_voltage_ch0: %.3f V, ch1: %.3f V", read_voltage_ch0, read_voltage_ch1);
-                // ESP_LOGD(TAG, "compare diff_ch0: %.3f V, ch1: %.3f V", diff_ch0, diff_ch1);
-                // ESP_LOGD(TAG, "set_voltage_ch0: %.3f V, ch1: %.3f V", set_voltage_ch0, set_voltage_ch1);
-            }
+            MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_B, set_voltage_ch1, false);
+            // ESP_LOGD(TAG, "set_voltage_ch0: %.3f V, ch1: %.3f V\n", set_voltage_ch0, set_voltage_ch1);
 
             // 6. 주행 상태 업데이트
             // 출력값이 2.5V(중립)와 거의 같으면 정지 상태로 간주
-            if (fabs(set_voltage_ch0 - 2.5f) < 0.1f && fabs(set_voltage_ch1 - 2.5f) < 0.1f) {
+            if (fabs(set_voltage_ch0 - STOP_VALUE) < 0.1f && fabs(set_voltage_ch1 - STOP_VALUE) < 0.1f) {
                 g_is_driving = false;
             } else {
                 g_is_driving = true;
             }
         }
+
+
 
         // 100ms loop, Z_Axis Linear Actuator Task (Automatic Position Control)
         if (current_read_time - last_z_pos_error_correction_time > 100) {
@@ -1071,7 +1015,7 @@ void md750t_ctrl_task(void *arg) {
             z_pos_error = g_z_pos_target - g_z_pos_mm;
 
             if (g_z_pos_cmd_status == MOVE_UP && g_z_pos_target != 0.0f) {
-                ESP_LOGD(TAG, "Z_UP Target: %.2f mm, Current: %.2f mm, Error: %.2f mm", g_z_pos_target, g_z_pos_mm, z_pos_error);
+                ESP_LOGD(TAG, "Z_UP Target: %.3f mm, Current: %.3f mm, Error: %.3f mm", g_z_pos_target, g_z_pos_mm, z_pos_error);
                 if (z_pos_error >= 100.0f) { 
                     L298N_PWM_Set_Speed_M1(400); 
                 } else if (z_pos_error < 100.0f && z_pos_error >= 40.0f) { 
@@ -1096,7 +1040,7 @@ void md750t_ctrl_task(void *arg) {
                 }
             }
             if (g_z_pos_cmd_status == MOVE_DN && g_z_pos_target != 0.0f) {
-                ESP_LOGD(TAG, "Z_DN Target: %.2f mm, Current: %.2f mm, Error: %.2f mm", g_z_pos_target, g_z_pos_mm, z_pos_error);
+                ESP_LOGD(TAG, "Z_DN Target: %.3f mm, Current: %.3f mm, Error: %.3f mm", g_z_pos_target, g_z_pos_mm, z_pos_error);
                 if (z_pos_error <= -100.0f) { 
                     if (g_z_pos_mm < 600.0f) {
                         L298N_PWM_Set_Speed_M1(50); 
@@ -1322,11 +1266,11 @@ void md750t_ctrl_task(void *arg) {
             ESP_LOGD(TAG, "Motor Voltages(CH2): %.3f V, Battery Voltage(CH3): %.3f V", g_motor_voltage, g_battery_voltage);
 
             if (g_battery_voltage > 29.2f) {    // 29.2V 이상 과충전상태 진입 -> 충전중지
-                ESP_LOGW(TAG, "Battery voltage is over Charging status: %.2f V", g_battery_voltage);
+                ESP_LOGW(TAG, "Battery voltage is over Charging status: %.3f V", g_battery_voltage);
                 over_charge_state_mode = true;
                 charging_dock_mode = false;
             } else if (g_battery_voltage < 27.2f) { // 27.2V 이하로 복귀시 과충전상태 해제 -> 충전재개 가능
-                // ESP_LOGI(TAG, "Battery voltage is back to Normal status: %.2f V", g_battery_voltage);
+                // ESP_LOGI(TAG, "Battery voltage is back to Normal status: %.3f V", g_battery_voltage);
                 over_charge_state_mode = false;
             }
 
