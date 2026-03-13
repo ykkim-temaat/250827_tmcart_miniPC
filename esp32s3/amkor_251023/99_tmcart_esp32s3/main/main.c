@@ -79,7 +79,7 @@ static rcl_init_options_t init_options;
 
 // ===========================================================
 static const char *TAG = "MAIN";
-static const char *FIRMWARE_VERSION = "TMCart_ESP32S3_v1.0.9_260311; 주행개선 테스트";
+static const char *FIRMWARE_VERSION = "TMCart_unit-2_v1.0.10_260313; 주행개선테스트(원복)";
 
 typedef enum {
     CPU_NUM_0 = 0,
@@ -835,6 +835,7 @@ void md750t_ctrl_task(void *arg) {
         }   
 
         // 100ms loop, Read Load Cell Voltages & Update MCP4728 (주행모드)
+#if 0
         if (current_read_time - last_loadcell_time > 100) { 
             last_loadcell_time = current_read_time;
 
@@ -999,7 +1000,205 @@ void md750t_ctrl_task(void *arg) {
                 g_is_driving = true;
             }
         }
+#endif
+        if (current_read_time - last_loadcell_time > 100) { 
+            last_loadcell_time = current_read_time;
 
+            // 1. Read Load Cell Voltages
+            ADS1115_ReadVoltage(ADS1115_MUX_AIN0_GND, &read_voltage_ch0);
+            vTaskDelay(pdMS_TO_TICKS(10));
+            ADS1115_ReadVoltage(ADS1115_MUX_AIN1_GND, &read_voltage_ch1);
+            
+            // ESP_LOGD(TAG, "read_voltage_ch0: %.2f V, ch1: %.2f V", read_voltage_ch0, read_voltage_ch1);
+            // ESP_LOGD(TAG, "neutral_voltage_ch0: %.2f V, ch1: %.2f V", neutral_voltage_ch0, neutral_voltage_ch1);
+
+            // 2. 제어 변수 설정
+            float diff_step = 0.1f;       // 편차 스텝 (diff_step)
+            float ramp_up_step = 0.01f;   // 가속 스텝
+            float ramp_dn_step = 0.01f;   // 감속 스텝
+            // float ramp_dn_step = 0.02f;   // 감속 스텝 (가속보다 빠르게 멈춤)
+
+            // 3. CH0 제어 로직 (역방향 제어: 입력 High -> 출력 Low)
+            float diff_ch0 = read_voltage_ch0 - neutral_voltage_ch0;
+
+            if (diff_ch0 > diff_step) {
+                // 반응하지 않는 구간 건너뛰기 (2.2V ~ 2.5V, 2.5V ~ 2.8V)
+                if (set_voltage_ch0 > 2.2f && set_voltage_ch0 < 2.5f) {
+                    set_voltage_ch0 = 2.2f;
+                } else if (set_voltage_ch0 > 2.5f && set_voltage_ch0 < 2.8f) {
+                    set_voltage_ch0 = 2.8f;
+                }
+                // 입력이 기준보다 0.1V 이상 높음 -> 출력 감소 (후진 or 전진)
+                set_voltage_ch0 += ramp_up_step;
+            } else if (diff_ch0 < -diff_step) {
+                // 반응하지 않는 구간 건너뛰기 (2.2V ~ 2.5V, 2.5V ~ 2.8V)
+                if (set_voltage_ch0 > 2.2f && set_voltage_ch0 < 2.5f) {
+                    set_voltage_ch0 = 2.2f;
+                } else if (set_voltage_ch0 > 2.5f && set_voltage_ch0 < 2.8f) {
+                    set_voltage_ch0 = 2.8f;
+                }
+                // 입력이 기준보다 0.1V 이상 낮음 -> 출력 증가
+                set_voltage_ch0 -= ramp_up_step;
+            } else {
+                if (set_voltage_ch0 > 2.5f) {
+                    set_voltage_ch0 -= ramp_dn_step;
+                    if (set_voltage_ch0 < 2.8f) set_voltage_ch0 = 2.5f;
+                } else if (set_voltage_ch0 < 2.5f) {
+                    set_voltage_ch0 += ramp_dn_step;
+                    if (set_voltage_ch0 > 2.2f) set_voltage_ch0 = 2.5f;
+                }
+            }
+
+            // 4. CH1 제어 로직 (동일 로직)
+            float diff_ch1 = read_voltage_ch1 - neutral_voltage_ch1;
+
+            if (diff_ch1 > diff_step) {
+                // 반응하지 않는 구간 건너뛰기 (2.2V ~ 2.5V, 2.5V ~ 2.8V)
+                if (set_voltage_ch1 > 2.2f && set_voltage_ch1 < 2.5f) {
+                    set_voltage_ch1 = 2.2f;
+                } else if (set_voltage_ch1 > 2.5f && set_voltage_ch1 < 2.8f) {
+                    set_voltage_ch1 = 2.8f;
+                }
+                set_voltage_ch1 += ramp_up_step;
+            } else if (diff_ch1 < -diff_step) {
+                // 반응하지 않는 구간 건너뛰기 (2.2V ~ 2.5V, 2.5V ~ 2.8V)
+                if (set_voltage_ch1 > 2.2f && set_voltage_ch1 < 2.5f) {
+                    set_voltage_ch1 = 2.2f;
+                } else if (set_voltage_ch1 > 2.5f && set_voltage_ch1 < 2.8f) {
+                    set_voltage_ch1 = 2.8f;
+                }
+                set_voltage_ch1 -= ramp_up_step;
+            } else {
+                if (set_voltage_ch1 > 2.5f) {
+                    set_voltage_ch1 -= ramp_dn_step;
+                    if (set_voltage_ch1 < 2.8f) set_voltage_ch1 = 2.5f;
+                } else if (set_voltage_ch1 < 2.5f) {
+                    set_voltage_ch1 += ramp_dn_step;
+                    if (set_voltage_ch1 > 2.2f) set_voltage_ch1 = 2.5f;
+                }
+            }
+
+            // ESP_LOGD(TAG, "set_voltage_ch0: %.2f V, ch1: %.2f V", set_voltage_ch0, set_voltage_ch1);
+
+            // 전진속도 제한
+            if (set_voltage_ch0 < 2.19f || set_voltage_ch1 < 2.19f) {
+                float set_voltage_tmp = (set_voltage_ch0 + set_voltage_ch1) / 2.0f; 
+                set_voltage_ch0 = set_voltage_tmp;
+                set_voltage_ch1 = set_voltage_tmp;
+                ESP_LOGI(TAG, "set_voltage_ch0 & ch1 limited to %.2f V", set_voltage_tmp);
+            }
+
+            // 전진속도 제한
+            if (set_voltage_ch0 < 2.15) {
+                set_voltage_ch0 = 2.15f;
+                ESP_LOGI(TAG, "set_voltage_ch0 limited to 2.15f V");
+            }
+            if (set_voltage_ch1 < 2.15) {
+                set_voltage_ch1 = 2.15f;
+                ESP_LOGI(TAG, "set_voltage_ch1 limited to 2.15f V");
+            }  
+
+            // 후진속도 제한
+            if (set_voltage_ch0 > 2.81) {
+                set_voltage_ch0 = 2.81f;
+                ESP_LOGI(TAG, "set_voltage_ch0 limited to 2.81f V");
+            }
+            if (set_voltage_ch1 > 2.81) {
+                set_voltage_ch1 = 2.81f;
+                ESP_LOGI(TAG, "set_voltage_ch1 limited to 2.81f V");
+            }            
+
+            // ESP_LOGD(TAG, "set_voltage_ch0: %.2f V, ch1: %.2f V\n", set_voltage_ch0, set_voltage_ch1);
+
+            // Slow drive Mode 1 (Push-button)
+            if (slow_drive_left_cnt > 0 && slow_drive_right_cnt > 0) { 
+                if (set_voltage_ch0 < 2.2f || set_voltage_ch1 < 2.2f) {
+                    set_voltage_ch0 = 2.19f;
+                    set_voltage_ch1 = 2.19f;
+                    ESP_LOGI(TAG, "Slow Drive Mode: FWD limited to 2.19f V");
+                } else if (set_voltage_ch0 > 2.8f || set_voltage_ch1 > 2.8f) {
+                    set_voltage_ch0 = 2.81f;
+                    set_voltage_ch1 = 2.81f;
+                    ESP_LOGI(TAG, "Slow Drive Mode: BACK limited to 2.81f V");
+                }
+            }
+
+            // Slow drive Mode 2 (RFID) 
+            if (twist_mode == true) { 
+                if (set_voltage_ch0 < 2.2f) {
+                    set_voltage_ch0 = 2.19f;
+                    ESP_LOGI(TAG, "Twist Mode: LEFT FWD limited to 2.19f V");
+                } else if (set_voltage_ch0 > 2.8f) {
+                    set_voltage_ch0 = 2.81f;
+                    ESP_LOGI(TAG, "Twist Mode: LEFT BACK limited to 2.81f V");
+                }
+                if (set_voltage_ch1 < 2.2f) {
+                    set_voltage_ch1 = 2.19f;
+                    ESP_LOGI(TAG, "Twist Mode: RIGHT FWD limited to 2.19f V");
+                } else if (set_voltage_ch1 > 2.8f) {
+                    set_voltage_ch1 = 2.81f;
+                    ESP_LOGI(TAG, "Twist Mode: RIGHT BACK limited to 2.81f V");
+                }
+            }
+
+            // // prohibit one-hand operation
+            // if (read_voltage_ch0 > 2.4 && read_voltage_ch0 < 2.6) { 
+            //     set_voltage_ch1 = 2.5; 
+            // }
+
+            // if (read_voltage_ch1 > 2.4 && read_voltage_ch1 < 2.6) { 
+            //     set_voltage_ch0 = 2.5; 
+            // }
+
+            // simple cmd_vel (0x64)
+            if (simple_cmd_vel == true) { 
+                simple_cmd_vel = false; 
+                curr_ros_cmd = 0;
+                
+                set_voltage_ch0 = simple_cmd_vel_left;
+                set_voltage_ch1 = simple_cmd_vel_right;
+                // simple_cmd_vel_count++;
+
+                // ESP_LOGD(TAG, "simple_cmd_vel_left: %.2f V, simple_cmd_vel_right: %.2f V", simple_cmd_vel_left, simple_cmd_vel_right);
+                // ESP_LOGD(TAG, "Simple cmd_vel ACTIVE, count: %d", simple_cmd_vel_count);
+
+                // if (simple_cmd_vel_count > 5) {
+                //     simple_cmd_vel_count = 1;
+                //     set_voltage_ch0 = 2.5f;
+                //     set_voltage_ch1 = 2.5f;
+                //     simple_cmd_vel = false; 
+                //     curr_ros_cmd = 0;
+                //     ESP_LOGD(TAG, "Simple cmd_vel TIMEOUT -> STOP");
+                // }
+            }
+            
+            // prohibit twist (GUI에 의한 주행금지 명령)
+            if (prohibit_twist == true) { 
+                set_voltage_ch0 = 2.5; 
+                set_voltage_ch1 = 2.5; 
+            }
+
+            // 전원 투입 후 5초 이내에는 무조건 정지명령
+            if (current_read_time - md750t_start_time < 5000) { 
+                // ESP_LOGD(TAG, "current_read_time: %lu, md750t_start_time: %lu, diff: %lu", current_read_time, md750t_start_time, current_read_time - md750t_start_time);
+                set_voltage_ch0 = 2.5; 
+                set_voltage_ch1 = 2.5; 
+            }
+
+            // 5. Update MCP4728 (마지막 실행)
+            MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_A, set_voltage_ch0, false);
+            vTaskDelay(pdMS_TO_TICKS(10));
+            MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_B, set_voltage_ch1, false);
+            // ESP_LOGD(TAG, "set_voltage_ch0: %.2f V, ch1: %.2f V\n", set_voltage_ch0, set_voltage_ch1);
+
+            // 6. 주행 상태 업데이트
+            // 출력값이 2.5V(중립)와 거의 같으면 정지 상태로 간주
+            if (fabs(set_voltage_ch0 - 2.5f) < 0.01f && fabs(set_voltage_ch1 - 2.5f) < 0.01f) {
+                g_is_driving = false;
+            } else {
+                g_is_driving = true;
+            }
+        }
 
 
         // 100ms loop, Z_Axis Linear Actuator Task (Automatic Position Control)
