@@ -79,7 +79,7 @@ static rcl_init_options_t init_options;
 
 // ===========================================================
 static const char *TAG = "MAIN";
-static const char *FIRMWARE_VERSION = "TMCart_ESP32S3_v1.1.0_260409; Z축 중부하 하강정밀도 개선";
+static const char *FIRMWARE_VERSION = "TMCart_ESP32S3_v1.0.9_260311; 주행개선 Swap 테스트";
 
 typedef enum {
     CPU_NUM_0 = 0,
@@ -1298,28 +1298,37 @@ void md750t_ctrl_task(void *arg) {
             if (g_z_pos_cmd_status == MOVE_DN && g_z_pos_target != 0.0f) {
                 ESP_LOGD(TAG, "Z_DN Target: %.2f mm, Current: %.2f mm, Error: %.2f mm", g_z_pos_target, g_z_pos_mm, z_pos_error);
                 if (z_pos_error <= -100.0f) { 
-                    L298N_PWM_Set_Speed_M1(200); 
-                    if (g_z_pos_mm < 650.0f) L298N_PWM_Set_Speed_M1(50);
+                    if (g_z_pos_mm < 600.0f) {
+                        L298N_PWM_Set_Speed_M1(50); 
+                    } else if (g_z_pos_mm >= 600.0f && g_z_pos_mm < 700.0f) {
+                        L298N_PWM_Set_Speed_M1(100); 
+                    } else if (g_z_pos_mm >= 700.0f) {
+                        L298N_PWM_Set_Speed_M1(400); 
+                    }
                 } else if (z_pos_error > -100.0f && z_pos_error <= -40.0f) { 
-                    L298N_PWM_Set_Speed_M1(150); 
-                    if (g_z_pos_mm < 650.0f) L298N_PWM_Set_Speed_M1(50);
+                    if (g_z_pos_mm < 600.0f) {
+                        L298N_PWM_Set_Speed_M1(50); 
+                    } else if (g_z_pos_mm >= 600.0f && g_z_pos_mm < 700.0f) {
+                        L298N_PWM_Set_Speed_M1(100); 
+                    } else if (g_z_pos_mm >= 700.0f) {
+                        L298N_PWM_Set_Speed_M1(300); 
+                    }
                 } else if (z_pos_error > -40.0f && z_pos_error <= -30.0f) { 
-                    L298N_PWM_Set_Speed_M1(100); 
-                    if (g_z_pos_mm < 650.0f) L298N_PWM_Set_Speed_M1(50);
+                    if (g_z_pos_mm < 600.0f) {
+                        L298N_PWM_Set_Speed_M1(50); 
+                    } else if (g_z_pos_mm >= 600.0f && g_z_pos_mm < 700.0f) {
+                        L298N_PWM_Set_Speed_M1(100); 
+                    } else if (g_z_pos_mm >= 700.0f) {
+                        L298N_PWM_Set_Speed_M1(200); 
+                    }
                 } else if (z_pos_error > -30.0f && z_pos_error <= -20.0f) { 
-                    L298N_PWM_Set_Speed_M1(80); 
-                    if (g_z_pos_mm < 650.0f) L298N_PWM_Set_Speed_M1(50);
+                    L298N_PWM_Set_Speed_M1(50); 
                 } else if (z_pos_error > -20.0f && z_pos_error <= -10.0f) { 
                     L298N_PWM_Set_Speed_M1(50); 
                 } else if (z_pos_error > -10.0f && z_pos_error <= -5.0f) { 
                     L298N_PWM_Set_Speed_M1(50); 
                 // } else if (z_pos_error >= 0.0f) {
-                } else if ((z_pos_error >= -1.5f && g_load1_detected == false) ||
-                           (z_pos_error >= -4.5f && g_load1_detected == true)) { 
-                    pcf8574_read_byte(PCF8574_ADDR_0x27, &input_27);
-                    input_27 = (input_27 & ~0x01) & ~0x04;
-                    pcf8574_write_byte(PCF8574_ADDR_0x27, input_27);
-
+                } else if (z_pos_error >= -1.5f) {
                     L298N_PWM_Set_Speed_M1(0);
                     RosCommand_t stop_cmd = {0x10, 0, 0};
                     xQueueSendToFront(g_ros_cmd_queue, &stop_cmd, 0);
