@@ -41,6 +41,7 @@ sudo systemctl enable ch348-loader.service # 부팅 시 실행하도록 설정
 # 현재 상태에서 즉시 실행 테스트
 sudo systemctl start ch348-loader.service
 # 결과확인
+sudo systemctl status ch348-loader.service
 ls -l /dev/ttyCH*
 
 # 리부팅후 결과확인
