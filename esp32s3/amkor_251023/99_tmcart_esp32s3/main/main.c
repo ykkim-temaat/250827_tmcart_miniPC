@@ -79,7 +79,7 @@ static rcl_init_options_t init_options;
 
 // ===========================================================
 static const char *TAG = "MAIN";
-static const char *FIRMWARE_VERSION = "TMCart_unit-2_v1.0.11_260422; 주행개선테스트(2호기)";
+static const char *FIRMWARE_VERSION = "deploy2_v1.1.0_260522; Z축 PID적용 (2호기)";
 
 typedef enum {
     CPU_NUM_0 = 0,
@@ -515,15 +515,18 @@ void md750t_ctrl_task(void *arg) {
     const int CALIB_SAMPLES = 30;           // 샘플링 횟수 증가 (20 -> 30)
     const int MAX_CALIB_RETRIES = 5;        // 최대 재시도 횟수
 
+    const float CALIB_DIFF_CH0 = 0.0106f;  // CH0 캘리브레이션 보정값 (R155)
+    const float CALIB_DIFF_CH1 = 0.0029f;  // CH1 캘리브레이션 보정값 (R156)
+
     float final_avg_ch0 = 2.5f;
     float final_avg_ch1 = 2.5f;
     bool calibration_success = false;
     int retry_cnt = 0;
 
     // 초기 DAC 설정 (안전을 위해 2.5V 중립 강제 출력)
-    MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_A, 2.5f, false);
+    MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_A, 2.5f - CALIB_DIFF_CH0, false);
     vTaskDelay(pdMS_TO_TICKS(10));
-    MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_B, 2.5f, false);
+    MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_B, 2.5f - CALIB_DIFF_CH1, false);
 
     ESP_LOGI(TAG, ">>> Starting Load Cell Calibration...");
 
@@ -606,8 +609,8 @@ void md750t_ctrl_task(void *arg) {
         neutral_voltage_ch1 = final_avg_ch1;
         
         // 안전을 위해 1회 더 중립 출력
-        MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_A, 2.5f, false);
-        MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_B, 2.5f, false);
+        MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_A, 2.5f - CALIB_DIFF_CH0, false);
+        MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_B, 2.5f - CALIB_DIFF_CH1, false);
     }
 
     while(1) {        
@@ -616,7 +619,7 @@ void md750t_ctrl_task(void *arg) {
         // 큐에서 새로운 명령어가 있는지 확인 (비동기, 0ms 대기)
         // 기존 100ms 시간 제한 블록을 큐 확인 블록으로 대체
         if (xQueueReceive(g_ros_cmd_queue, &received_cmd, 0) == pdTRUE) {
-            ESP_LOGD(TAG, "New CMD from Q: 0x%02lX, val1: %.3f, val2: %.3f", received_cmd.cmd, received_cmd.val1, received_cmd.val2);
+            ESP_LOGD(TAG, "New CMD from Q: 0x%02lX, val1: %.2f, val2: %.2f", received_cmd.cmd, received_cmd.val1, received_cmd.val2);
             
             // 모든 g_ros_cmd, g_ros_val1, g_ros_val2를 received_cmd 구조체 멤버로 변경
             // Z_Axis Linear Actuator Command (Manual Control)
@@ -847,9 +850,8 @@ void md750t_ctrl_task(void *arg) {
             // ESP_LOGD(TAG, "neutral_voltage_ch0: %.2f V, ch1: %.2f V", neutral_voltage_ch0, neutral_voltage_ch1);
 
             // 2. 제어 변수 설정
-            // float diff_step = 0.1f;       // 편차 스텝 (diff_step)
-            float diff_step = 0.2f;       // 편차 스텝 (diff_step)
-            float ramp_up_step = 0.005f;   // 가속 스텝
+            float diff_step = 0.1f;       // 편차 스텝 (diff_step)
+            float ramp_up_step = 0.01f;   // 가속 스텝
             float ramp_dn_step = 0.01f;   // 감속 스텝
             // float ramp_dn_step = 0.02f;   // 감속 스텝 (가속보다 빠르게 멈춤)
 
@@ -916,8 +918,7 @@ void md750t_ctrl_task(void *arg) {
             // ESP_LOGD(TAG, "set_voltage_ch0: %.2f V, ch1: %.2f V", set_voltage_ch0, set_voltage_ch1);
 
             // 전진속도 제한
-            if (set_voltage_ch0 < 2.195f || set_voltage_ch1 < 2.195f) {
-                // ESP_LOGD(TAG, "set_voltage_ch0: %.2f V, ch1: %.2f V", set_voltage_ch0, set_voltage_ch1);
+            if (set_voltage_ch0 < 2.19f || set_voltage_ch1 < 2.19f) {
                 float set_voltage_tmp = (set_voltage_ch0 + set_voltage_ch1) / 2.0f; 
                 set_voltage_ch0 = set_voltage_tmp;
                 set_voltage_ch1 = set_voltage_tmp;
@@ -935,12 +936,12 @@ void md750t_ctrl_task(void *arg) {
             }  
 
             // 후진속도 제한
-            if (set_voltage_ch0 > 2.8f) {
-                set_voltage_ch0 = 2.805f;
+            if (set_voltage_ch0 > 2.81) {
+                set_voltage_ch0 = 2.81f;
                 ESP_LOGI(TAG, "set_voltage_ch0 limited to 2.81f V");
             }
-            if (set_voltage_ch1 > 2.8f) {
-                set_voltage_ch1 = 2.805f;
+            if (set_voltage_ch1 > 2.81) {
+                set_voltage_ch1 = 2.81f;
                 ESP_LOGI(TAG, "set_voltage_ch1 limited to 2.81f V");
             }            
 
@@ -949,31 +950,31 @@ void md750t_ctrl_task(void *arg) {
             // Slow drive Mode 1 (Push-button)
             if (slow_drive_left_cnt > 0 && slow_drive_right_cnt > 0) { 
                 if (set_voltage_ch0 < 2.2f || set_voltage_ch1 < 2.2f) {
-                    set_voltage_ch0 = 2.195f;
-                    set_voltage_ch1 = 2.195f;
+                    set_voltage_ch0 = 2.19f;
+                    set_voltage_ch1 = 2.19f;
                     ESP_LOGI(TAG, "Slow Drive Mode: FWD limited to 2.19f V");
                 } else if (set_voltage_ch0 > 2.8f || set_voltage_ch1 > 2.8f) {
-                    set_voltage_ch0 = 2.805f;
-                    set_voltage_ch1 = 2.805f;
-                    ESP_LOGI(TAG, "Slow Drive Mode: BACK limited to 2.805f V");
+                    set_voltage_ch0 = 2.81f;
+                    set_voltage_ch1 = 2.81f;
+                    ESP_LOGI(TAG, "Slow Drive Mode: BACK limited to 2.81f V");
                 }
             }
 
             // Slow drive Mode 2 (RFID) 
             if (twist_mode == true) { 
                 if (set_voltage_ch0 < 2.2f) {
-                    set_voltage_ch0 = 2.195f;
+                    set_voltage_ch0 = 2.19f;
                     ESP_LOGI(TAG, "Twist Mode: LEFT FWD limited to 2.19f V");
                 } else if (set_voltage_ch0 > 2.8f) {
-                    set_voltage_ch0 = 2.805f;
-                    ESP_LOGI(TAG, "Twist Mode: LEFT BACK limited to 2.805f V");
+                    set_voltage_ch0 = 2.81f;
+                    ESP_LOGI(TAG, "Twist Mode: LEFT BACK limited to 2.81f V");
                 }
                 if (set_voltage_ch1 < 2.2f) {
-                    set_voltage_ch1 = 2.195f;
+                    set_voltage_ch1 = 2.19f;
                     ESP_LOGI(TAG, "Twist Mode: RIGHT FWD limited to 2.19f V");
                 } else if (set_voltage_ch1 > 2.8f) {
-                    set_voltage_ch1 = 2.805f;
-                    ESP_LOGI(TAG, "Twist Mode: RIGHT BACK limited to 2.805f V");
+                    set_voltage_ch1 = 2.81f;
+                    ESP_LOGI(TAG, "Twist Mode: RIGHT BACK limited to 2.81f V");
                 }
             }
 
@@ -1036,7 +1037,6 @@ void md750t_ctrl_task(void *arg) {
             }
         }
 
-
         // 100ms loop, Z_Axis Linear Actuator Task (Automatic Position Control)
         if (current_read_time - last_z_pos_error_correction_time > 100) {
             last_z_pos_error_correction_time = current_read_time;
@@ -1050,7 +1050,7 @@ void md750t_ctrl_task(void *arg) {
             z_pos_error = g_z_pos_target - g_z_pos_mm;
 
             if (g_z_pos_cmd_status == MOVE_UP && g_z_pos_target != 0.0f) {
-                ESP_LOGD(TAG, "Z_UP Target: %.3f mm, Current: %.3f mm, Error: %.3f mm", g_z_pos_target, g_z_pos_mm, z_pos_error);
+                ESP_LOGD(TAG, "Z_UP Target: %.2f mm, Current: %.2f mm, Error: %.2f mm", g_z_pos_target, g_z_pos_mm, z_pos_error);
                 if (z_pos_error >= 100.0f) { 
                     L298N_PWM_Set_Speed_M1(400); 
                 } else if (z_pos_error < 100.0f && z_pos_error >= 40.0f) { 
@@ -1075,39 +1075,30 @@ void md750t_ctrl_task(void *arg) {
                 }
             }
             if (g_z_pos_cmd_status == MOVE_DN && g_z_pos_target != 0.0f) {
-                ESP_LOGD(TAG, "Z_DN Target: %.3f mm, Current: %.3f mm, Error: %.3f mm", g_z_pos_target, g_z_pos_mm, z_pos_error);
+                ESP_LOGD(TAG, "Z_DN Target: %.2f mm, Current: %.2f mm, Error: %.2f mm", g_z_pos_target, g_z_pos_mm, z_pos_error);
                 if (z_pos_error <= -100.0f) { 
-                    if (g_z_pos_mm < 600.0f) {
-                        L298N_PWM_Set_Speed_M1(50); 
-                    } else if (g_z_pos_mm >= 600.0f && g_z_pos_mm < 700.0f) {
-                        L298N_PWM_Set_Speed_M1(100); 
-                    } else if (g_z_pos_mm >= 700.0f) {
-                        L298N_PWM_Set_Speed_M1(400); 
-                    }
+                    L298N_PWM_Set_Speed_M1(200); 
+                    if (g_z_pos_mm < 650.0f) L298N_PWM_Set_Speed_M1(50);
                 } else if (z_pos_error > -100.0f && z_pos_error <= -40.0f) { 
-                    if (g_z_pos_mm < 600.0f) {
-                        L298N_PWM_Set_Speed_M1(50); 
-                    } else if (g_z_pos_mm >= 600.0f && g_z_pos_mm < 700.0f) {
-                        L298N_PWM_Set_Speed_M1(100); 
-                    } else if (g_z_pos_mm >= 700.0f) {
-                        L298N_PWM_Set_Speed_M1(300); 
-                    }
+                    L298N_PWM_Set_Speed_M1(150); 
+                    if (g_z_pos_mm < 650.0f) L298N_PWM_Set_Speed_M1(50);
                 } else if (z_pos_error > -40.0f && z_pos_error <= -30.0f) { 
-                    if (g_z_pos_mm < 600.0f) {
-                        L298N_PWM_Set_Speed_M1(50); 
-                    } else if (g_z_pos_mm >= 600.0f && g_z_pos_mm < 700.0f) {
-                        L298N_PWM_Set_Speed_M1(100); 
-                    } else if (g_z_pos_mm >= 700.0f) {
-                        L298N_PWM_Set_Speed_M1(200); 
-                    }
+                    L298N_PWM_Set_Speed_M1(100); 
+                    if (g_z_pos_mm < 650.0f) L298N_PWM_Set_Speed_M1(50);
                 } else if (z_pos_error > -30.0f && z_pos_error <= -20.0f) { 
-                    L298N_PWM_Set_Speed_M1(50); 
+                    L298N_PWM_Set_Speed_M1(80); 
+                    if (g_z_pos_mm < 650.0f) L298N_PWM_Set_Speed_M1(50);
                 } else if (z_pos_error > -20.0f && z_pos_error <= -10.0f) { 
                     L298N_PWM_Set_Speed_M1(50); 
                 } else if (z_pos_error > -10.0f && z_pos_error <= -5.0f) { 
                     L298N_PWM_Set_Speed_M1(50); 
                 // } else if (z_pos_error >= 0.0f) {
-                } else if (z_pos_error >= -1.5f) {
+                } else if ((z_pos_error >= -1.5f && g_load1_detected == false) ||
+                           (z_pos_error >= -4.5f && g_load1_detected == true)) { 
+                    pcf8574_read_byte(PCF8574_ADDR_0x27, &input_27);
+                    input_27 = (input_27 & ~0x01) & ~0x04;
+                    pcf8574_write_byte(PCF8574_ADDR_0x27, input_27);
+
                     L298N_PWM_Set_Speed_M1(0);
                     RosCommand_t stop_cmd = {0x10, 0, 0};
                     xQueueSendToFront(g_ros_cmd_queue, &stop_cmd, 0);
@@ -1301,11 +1292,11 @@ void md750t_ctrl_task(void *arg) {
             ESP_LOGD(TAG, "Motor Voltages(CH2): %.3f V, Battery Voltage(CH3): %.3f V", g_motor_voltage, g_battery_voltage);
 
             if (g_battery_voltage > 29.2f) {    // 29.2V 이상 과충전상태 진입 -> 충전중지
-                ESP_LOGW(TAG, "Battery voltage is over Charging status: %.3f V", g_battery_voltage);
+                ESP_LOGW(TAG, "Battery voltage is over Charging status: %.2f V", g_battery_voltage);
                 over_charge_state_mode = true;
                 charging_dock_mode = false;
             } else if (g_battery_voltage < 27.2f) { // 27.2V 이하로 복귀시 과충전상태 해제 -> 충전재개 가능
-                // ESP_LOGI(TAG, "Battery voltage is back to Normal status: %.3f V", g_battery_voltage);
+                // ESP_LOGI(TAG, "Battery voltage is back to Normal status: %.2f V", g_battery_voltage);
                 over_charge_state_mode = false;
             }
 
