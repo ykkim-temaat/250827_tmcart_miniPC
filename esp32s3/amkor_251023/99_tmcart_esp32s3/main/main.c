@@ -660,16 +660,20 @@ void md750t_ctrl_task(void *arg) {
                 pcf8574_read_byte(PCF8574_ADDR_0x27, &input_27);
                 input_27 = (input_27 | 0x04) & ~0x01;
                 pcf8574_write_byte(PCF8574_ADDR_0x27, input_27);
-                ESP_LOGD(TAG, "Z_FINE_UP (Move Backward) ... ");
-                    if (g_z_pos_mm < 600.0f) {
-                        L298N_PWM_Set_Speed_M1(240); 
-                    } else if (g_z_pos_mm >= 600.0f && g_z_pos_mm < 650.0f) {
-                        L298N_PWM_Set_Speed_M1(210); 
-                    } else if (g_z_pos_mm >= 650.0f && g_z_pos_mm < 700.0f) {
-                        L298N_PWM_Set_Speed_M1(180); 
-                    } else if (g_z_pos_mm >= 700.0f) {
-                        L298N_PWM_Set_Speed_M1(150); 
+                ESP_LOGD(TAG, "Z_FINE_UP (Move Backward) ... ");                
+                if (g_z_pos_mm < 600.0f) {
+                    if (g_load1_detected || g_load2_detected) {
+                        L298N_PWM_Set_Speed_M1(300);
+                    } else {
+                        L298N_PWM_Set_Speed_M1(240);
                     }
+                } else if (g_z_pos_mm >= 600.0f && g_z_pos_mm < 650.0f) {
+                    L298N_PWM_Set_Speed_M1(210); 
+                } else if (g_z_pos_mm >= 650.0f && g_z_pos_mm < 700.0f) {
+                    L298N_PWM_Set_Speed_M1(180); 
+                } else if (g_z_pos_mm >= 700.0f) {
+                    L298N_PWM_Set_Speed_M1(150); 
+                }
                 g_z_pos_target = 0.0f;
                 z_pos_error = 0.0f;
                 g_z_pos_cmd_status = MOVE_FINE_UP;
@@ -680,7 +684,11 @@ void md750t_ctrl_task(void *arg) {
                 input_27 = (input_27 | 0x01) & ~0x04;
                 pcf8574_write_byte(PCF8574_ADDR_0x27, input_27);
                 ESP_LOGD(TAG, "Z_FINE_DN (Move Forward) ... ");
-                L298N_PWM_Set_Speed_M1(50.0f);
+                if (g_load1_detected || g_load2_detected) {
+                    L298N_PWM_Set_Speed_M1(150); 
+                } else {
+                    L298N_PWM_Set_Speed_M1(50.0f);
+                }
                 g_z_pos_target = 0.0f;
                 z_pos_error = 0.0f;
                 g_z_pos_cmd_status = MOVE_FINE_DN;
@@ -1077,32 +1085,57 @@ void md750t_ctrl_task(void *arg) {
             if (g_z_pos_cmd_status == MOVE_DN && g_z_pos_target != 0.0f) {
                 ESP_LOGD(TAG, "Z_DN Target: %.2f mm, Current: %.2f mm, Error: %.2f mm", g_z_pos_target, g_z_pos_mm, z_pos_error);
                 if (z_pos_error <= -100.0f) { 
-                    L298N_PWM_Set_Speed_M1(200); 
                     if (g_z_pos_mm < 650.0f) L298N_PWM_Set_Speed_M1(50);
+                    else if (g_load1_detected == true || g_load2_detected == true) L298N_PWM_Set_Speed_M1(200);
+                    else L298N_PWM_Set_Speed_M1(400); 
                 } else if (z_pos_error > -100.0f && z_pos_error <= -40.0f) { 
-                    L298N_PWM_Set_Speed_M1(150); 
                     if (g_z_pos_mm < 650.0f) L298N_PWM_Set_Speed_M1(50);
+                    else if (g_load1_detected == true || g_load2_detected == true) L298N_PWM_Set_Speed_M1(150);
+                    else L298N_PWM_Set_Speed_M1(300); 
                 } else if (z_pos_error > -40.0f && z_pos_error <= -30.0f) { 
-                    L298N_PWM_Set_Speed_M1(100); 
                     if (g_z_pos_mm < 650.0f) L298N_PWM_Set_Speed_M1(50);
+                    else if (g_load1_detected == true || g_load2_detected == true) L298N_PWM_Set_Speed_M1(100);
+                    else L298N_PWM_Set_Speed_M1(200); 
                 } else if (z_pos_error > -30.0f && z_pos_error <= -20.0f) { 
-                    L298N_PWM_Set_Speed_M1(80); 
                     if (g_z_pos_mm < 650.0f) L298N_PWM_Set_Speed_M1(50);
+                    else if (g_load1_detected == true || g_load2_detected == true) L298N_PWM_Set_Speed_M1(80);
+                    else L298N_PWM_Set_Speed_M1(100); 
                 } else if (z_pos_error > -20.0f && z_pos_error <= -10.0f) { 
-                    L298N_PWM_Set_Speed_M1(50); 
+                    L298N_PWM_Set_Speed_M1(80); 
                 } else if (z_pos_error > -10.0f && z_pos_error <= -5.0f) { 
                     L298N_PWM_Set_Speed_M1(50); 
-                // } else if (z_pos_error >= 0.0f) {
-                } else if ((z_pos_error >= -1.5f && g_load1_detected == false) ||
-                           (z_pos_error >= -4.5f && g_load1_detected == true)) { 
-                    pcf8574_read_byte(PCF8574_ADDR_0x27, &input_27);
-                    input_27 = (input_27 & ~0x01) & ~0x04;
-                    pcf8574_write_byte(PCF8574_ADDR_0x27, input_27);
-
+                } else if (z_pos_error >= 0.0f) {
                     L298N_PWM_Set_Speed_M1(0);
                     RosCommand_t stop_cmd = {0x10, 0, 0};
                     xQueueSendToFront(g_ros_cmd_queue, &stop_cmd, 0);
                     ESP_LOGD(TAG, "MOVE_DN Auto STOP ... ");
+                }
+            }
+
+            // Z축 높이 보상 로직 (중량물 적재시 Z축 처짐 보상)
+            static float z_err_compensation = 0.0f;
+            // if (g_is_driving == false && g_emlock_on_state == true && g_docking_complete == true) {  // 보상로직적용 조건 추가
+            if (g_z_pos_cmd_status == MOVE_STOP && g_is_driving == false) {
+                if (z_pos_error > 1.5f) {
+                    ESP_LOGW(TAG, "Z-Axis Sagging Detected! Target: %.2f mm, Current: %.2f mm, Error: %.2f mm", g_z_pos_target, g_z_pos_mm, z_pos_error);
+                    // 보상로직으로 Z축을 상승시키는 명령을 추가해서 중력을 극복하는 힘을 가해 주어야 함.
+                    ESP_LOGD(TAG, "Z_UP for Anti-Sagging  ... ");
+                    z_err_compensation += 10.0f; // 보상 속도 (실험적으로 조정 필요)
+
+                    pcf8574_read_byte(PCF8574_ADDR_0x27, &input_27);
+                    input_27 = (input_27 | 0x04) & ~0x01;
+                    pcf8574_write_byte(PCF8574_ADDR_0x27, input_27);
+                    L298N_PWM_Set_Speed_M1(z_err_compensation);  
+                } else {
+                    if (z_err_compensation != 0.0f) {                    
+                        z_err_compensation = 0.0f; // 초기값으로 리셋
+                        ESP_LOGD(TAG, "Resetting Z-Axis Compensation ... ");
+                        L298N_PWM_Set_Speed_M1(0);
+                        pcf8574_read_byte(PCF8574_ADDR_0x27, &input_27);
+                        input_27 = (input_27 & ~0x01) & ~0x04;
+                        pcf8574_write_byte(PCF8574_ADDR_0x27, input_27);
+                        ESP_LOGD(TAG, "MOVE_UP Auto STOP ... ");                    
+                    }
                 }
             }
         }
