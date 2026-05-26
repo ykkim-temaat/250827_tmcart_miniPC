@@ -79,7 +79,7 @@ static rcl_init_options_t init_options;
 
 // ===========================================================
 static const char *TAG = "MAIN";
-static const char *FIRMWARE_VERSION = "deploy2_v1.1.1_260526; 주행개선";
+static const char *FIRMWARE_VERSION = "deploy2_v1.1.0_260522; Z축 PID적용 (2호기)";
 
 typedef enum {
     CPU_NUM_0 = 0,
@@ -866,34 +866,31 @@ void md750t_ctrl_task(void *arg) {
             // 3. CH0 제어 로직 (역방향 제어: 입력 High -> 출력 Low)
             float diff_ch0 = read_voltage_ch0 - neutral_voltage_ch0;
 
-            static const float DEADZONE_LOW = 2.25f; // Deadzone 하한
-            static const float DEADZONE_HIGH = 2.75f; // Deadzone 상한
-
             if (diff_ch0 > diff_step) {
                 // 반응하지 않는 구간 건너뛰기 (2.2V ~ 2.5V, 2.5V ~ 2.8V)
-                if (set_voltage_ch0 > DEADZONE_LOW && set_voltage_ch0 < 2.5f) {
-                    set_voltage_ch0 = DEADZONE_LOW;
-                } else if (set_voltage_ch0 > 2.5f && set_voltage_ch0 < DEADZONE_HIGH) {
-                    set_voltage_ch0 = DEADZONE_HIGH;
+                if (set_voltage_ch0 > 2.2f && set_voltage_ch0 < 2.5f) {
+                    set_voltage_ch0 = 2.2f;
+                } else if (set_voltage_ch0 > 2.5f && set_voltage_ch0 < 2.8f) {
+                    set_voltage_ch0 = 2.8f;
                 }
                 // 입력이 기준보다 0.1V 이상 높음 -> 출력 감소 (후진 or 전진)
                 set_voltage_ch0 += ramp_up_step;
             } else if (diff_ch0 < -diff_step) {
                 // 반응하지 않는 구간 건너뛰기 (2.2V ~ 2.5V, 2.5V ~ 2.8V)
-                if (set_voltage_ch0 > DEADZONE_LOW && set_voltage_ch0 < 2.5f) {
-                    set_voltage_ch0 = DEADZONE_LOW;
-                } else if (set_voltage_ch0 > 2.5f && set_voltage_ch0 < DEADZONE_HIGH) {
-                    set_voltage_ch0 = DEADZONE_HIGH;
+                if (set_voltage_ch0 > 2.2f && set_voltage_ch0 < 2.5f) {
+                    set_voltage_ch0 = 2.2f;
+                } else if (set_voltage_ch0 > 2.5f && set_voltage_ch0 < 2.8f) {
+                    set_voltage_ch0 = 2.8f;
                 }
                 // 입력이 기준보다 0.1V 이상 낮음 -> 출력 증가
                 set_voltage_ch0 -= ramp_up_step;
             } else {
                 if (set_voltage_ch0 > 2.5f) {
                     set_voltage_ch0 -= ramp_dn_step;
-                    if (set_voltage_ch0 < DEADZONE_HIGH) set_voltage_ch0 = 2.5f;
+                    if (set_voltage_ch0 < 2.8f) set_voltage_ch0 = 2.5f;
                 } else if (set_voltage_ch0 < 2.5f) {
                     set_voltage_ch0 += ramp_dn_step;
-                    if (set_voltage_ch0 > DEADZONE_LOW) set_voltage_ch0 = 2.5f;
+                    if (set_voltage_ch0 > 2.2f) set_voltage_ch0 = 2.5f;
                 }
             }
 
@@ -902,27 +899,27 @@ void md750t_ctrl_task(void *arg) {
 
             if (diff_ch1 > diff_step) {
                 // 반응하지 않는 구간 건너뛰기 (2.2V ~ 2.5V, 2.5V ~ 2.8V)
-                if (set_voltage_ch1 > DEADZONE_LOW && set_voltage_ch1 < 2.5f) {
-                    set_voltage_ch1 = DEADZONE_LOW;
-                } else if (set_voltage_ch1 > 2.5f && set_voltage_ch1 < DEADZONE_HIGH) {
-                    set_voltage_ch1 = DEADZONE_HIGH;
+                if (set_voltage_ch1 > 2.2f && set_voltage_ch1 < 2.5f) {
+                    set_voltage_ch1 = 2.2f;
+                } else if (set_voltage_ch1 > 2.5f && set_voltage_ch1 < 2.8f) {
+                    set_voltage_ch1 = 2.8f;
                 }
                 set_voltage_ch1 += ramp_up_step;
             } else if (diff_ch1 < -diff_step) {
                 // 반응하지 않는 구간 건너뛰기 (2.2V ~ 2.5V, 2.5V ~ 2.8V)
-                if (set_voltage_ch1 > DEADZONE_LOW && set_voltage_ch1 < 2.5f) {
-                    set_voltage_ch1 = DEADZONE_LOW;
-                } else if (set_voltage_ch1 > 2.5f && set_voltage_ch1 < DEADZONE_HIGH) {
-                    set_voltage_ch1 = DEADZONE_HIGH;
+                if (set_voltage_ch1 > 2.2f && set_voltage_ch1 < 2.5f) {
+                    set_voltage_ch1 = 2.2f;
+                } else if (set_voltage_ch1 > 2.5f && set_voltage_ch1 < 2.8f) {
+                    set_voltage_ch1 = 2.8f;
                 }
                 set_voltage_ch1 -= ramp_up_step;
             } else {
                 if (set_voltage_ch1 > 2.5f) {
                     set_voltage_ch1 -= ramp_dn_step;
-                    if (set_voltage_ch1 < DEADZONE_HIGH) set_voltage_ch1 = 2.5f;
+                    if (set_voltage_ch1 < 2.8f) set_voltage_ch1 = 2.5f;
                 } else if (set_voltage_ch1 < 2.5f) {
                     set_voltage_ch1 += ramp_dn_step;
-                    if (set_voltage_ch1 > DEADZONE_LOW) set_voltage_ch1 = 2.5f;
+                    if (set_voltage_ch1 > 2.2f) set_voltage_ch1 = 2.5f;
                 }
             }
 
