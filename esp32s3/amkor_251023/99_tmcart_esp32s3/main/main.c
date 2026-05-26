@@ -79,7 +79,7 @@ static rcl_init_options_t init_options;
 
 // ===========================================================
 static const char *TAG = "MAIN";
-static const char *FIRMWARE_VERSION = "deploy2_v1.1.1_260526; 주행개선";
+static const char *FIRMWARE_VERSION = "deploy2_v1.1.2_260526; Z-HOME CALIB 534mm";
 
 typedef enum {
     CPU_NUM_0 = 0,
