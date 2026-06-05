@@ -79,7 +79,7 @@ static rcl_init_options_t init_options;
 
 // ===========================================================
 static const char *TAG = "MAIN";
-static const char *FIRMWARE_VERSION = "deploy2_v1.1.3_260605; Docking 센서 상태 추가";
+static const char *FIRMWARE_VERSION = "deploy2_v1.1.4_260605; 주행 딜레이 짧게 변경";
 
 typedef enum {
     CPU_NUM_0 = 0,
@@ -872,7 +872,8 @@ void md750t_ctrl_task(void *arg) {
             // 3. CH0 제어 로직 (역방향 제어: 입력 High -> 출력 Low)
             float diff_ch0 = read_voltage_ch0 - neutral_voltage_ch0;
 
-            static const float DEADZONE_LOW = 2.25f; // Deadzone 하한
+            // static const float DEADZONE_LOW = 2.25f; // Deadzone 하한
+            static const float DEADZONE_LOW = 2.21f; // Deadzone 하한
             static const float DEADZONE_HIGH = 2.75f; // Deadzone 상한
 
             if (diff_ch0 > diff_step) {
