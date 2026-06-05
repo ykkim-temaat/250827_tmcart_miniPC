@@ -79,7 +79,7 @@ static rcl_init_options_t init_options;
 
 // ===========================================================
 static const char *TAG = "MAIN";
-static const char *FIRMWARE_VERSION = "deploy2_v1.1.3_260605; Docking 센서 상태 추가";
+static const char *FIRMWARE_VERSION = "deploy2_v1.1.2_260526; Z-HOME CALIB 534mm";
 
 typedef enum {
     CPU_NUM_0 = 0,
@@ -137,9 +137,7 @@ bool g_load2_detected = false;      // Load2 (FRONT) 상태 (true: Detected, fal
 bool g_rear_bumper_detected = false;      // REAR_BUMPER 상태 (true: Detected, false: Not Detected)
 bool g_docking_complete = false;      // Docking 상태 (true: Complete, false: Incomplete)
 bool g_clutch_on_state = false;       // Clutch 상태 (true: On, false: Off)
-bool g_calibration_failed = false;    // 캘리브레이션 실패 상태
-bool g_docking_left = false;          // Docking Left 상태 (true: Detected, false: Not Detected)
-bool g_docking_right = false;         // Docking Right 상태 (true: Detected, false: Not Detected)
+bool g_calibration_failed = false;    // [신규] 캘리브레이션 실패 상태
 
 // ===========================================================
 // micro-ROS Publisher related
@@ -172,9 +170,7 @@ std_msgs__msg__Int32 tmcart_status_msg;
  * Bit 11	| (1 << 11) | docking_complete | 도킹 완료
  * Bit 12	| (1 << 12) | clutch_on_state | CLUTCH 풀림 (사람에 의한 제어)
  * Bit 13	| (1 << 13) | calibration_failed | 캘리브레이션 실패
- * Bit 14	| (1 << 14) | docking_left | 도킹센서 좌측 감지
- * Bit 15	| (1 << 15) | docking_right | 도킹센서 우측 감지
- * Bit 16-31 	-	예비 (Reserved)	-
+ * Bit 14-31 	-	예비 (Reserved)	-
 **/
 
 // ===========================================================
@@ -251,9 +247,7 @@ void status_timer_callback(rcl_timer_t *timer, int64_t last_call_time)
         if (g_rear_bumper_detected)     { encoded_status |= (1 << 10); }
         if (g_docking_complete)     { encoded_status |= (1 << 11); }
         if (g_clutch_on_state)      { encoded_status |= (1 << 12); }
-        if (g_calibration_failed)  { encoded_status |= (1 << 13); }        
-        if (g_docking_left)        { encoded_status |= (1 << 14); }
-        if (g_docking_right)       { encoded_status |= (1 << 15); }
+        if (g_calibration_failed)  { encoded_status |= (1 << 13); }
 
         // 3. 인코딩된 값을 메시지에 담아 한 번만 발행
         tmcart_status_msg.data = encoded_status;
@@ -1240,40 +1234,14 @@ void md750t_ctrl_task(void *arg) {
                 g_load2_detected = true; // 상태 업데이트
             }
 
-            // Docking Complete Signal            
-            // if (input_23 & 0x04 || input_23 & 0x08) { 
-            //     // ESP_LOGD(TAG, "Docking NOT COMPLETE!");
-            //     g_docking_complete = false; // 상태 업데이트
-            // } else {                
-            //     // ESP_LOGD(TAG, "Docking COMPLETE!");
-            //     g_docking_complete = true; // 상태 업데이트
-            // }
-
-            // ---------------------------------------------------------
-            // Docking Complete Signal 및 좌/우 개별 감지 로직 (2026-06-05)
-            // ---------------------------------------------------------
-            
-            // 좌측 도킹 센서 감지 (예: 0x04 비트가 0일 때 감지로 가정)
-            if ((input_23 & 0x04) == 0) { 
-                g_docking_left = true;
-            } else {
-                g_docking_left = false;
-            }
-
-            // 우측 도킹 센서 감지 (예: 0x08 비트가 0일 때 감지로 가정)
-            if ((input_23 & 0x08) == 0) { 
-                g_docking_right = true;
-            } else {
-                g_docking_right = false;
-            }
-
-            // 양쪽 모두 감지되었을 때 Docking Complete 플래그 활성화
-            if (g_docking_left && g_docking_right) { 
-                // ESP_LOGD(TAG, "Docking COMPLETE!");
-                g_docking_complete = true; 
-            } else {                
+            // Docking Complete Signal
+            if (input_23 & 0x04 || input_23 & 0x08) { 
                 // ESP_LOGD(TAG, "Docking NOT COMPLETE!");
-                g_docking_complete = false; 
+                g_docking_complete = false; // 상태 업데이트
+            } else {                
+                // ESP_LOGD(TAG, "Docking COMPLETE!");
+                g_docking_complete = true; // 상태 업데이트
+
             }
 
             // Detect Z-Home Sensor 
