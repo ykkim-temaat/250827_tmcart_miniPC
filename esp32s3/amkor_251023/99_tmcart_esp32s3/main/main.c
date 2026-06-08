@@ -625,9 +625,14 @@ void md750t_ctrl_task(void *arg) {
         unsigned long current_read_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
 
         // 큐에서 새로운 명령어가 있는지 확인 (비동기, 0ms 대기)
-        // 기존 100ms 시간 제한 블록을 큐 확인 블록으로 대체
         if (xQueueReceive(g_ros_cmd_queue, &received_cmd, 0) == pdTRUE) {
             ESP_LOGD(TAG, "New CMD from Q: 0x%02lX, val1: %.2f, val2: %.2f", received_cmd.cmd, received_cmd.val1, received_cmd.val2);
+
+            // 안전 차단 방어 로직 
+            if (g_estop_state || g_rear_bumper_detected || g_calibration_failed) {
+                ESP_LOGW(TAG, "Safety Lock Active! Ignoring ROS CMD: 0x%02lX", received_cmd.cmd);
+                continue; // 명령을 실행하지 않고 다음 큐 확인이나 다음 루프로 넘어감
+            }
             
             // 모든 g_ros_cmd, g_ros_val1, g_ros_val2를 received_cmd 구조체 멤버로 변경
             // Z_Axis Linear Actuator Command (Manual Control)
@@ -1046,13 +1051,19 @@ void md750t_ctrl_task(void *arg) {
                 set_voltage_ch1 = 2.5; 
             }
 
-            // 5. Update MCP4728 (마지막 실행)
+            // EMO 발동 시 소프트웨어 강제 정지 
+            if (g_estop_state || g_rear_bumper_detected) {
+                set_voltage_ch0 = 2.5f;
+                set_voltage_ch1 = 2.5f;
+            }
+
+            // Update MCP4728 (마지막 실행)
             MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_A, set_voltage_ch0, false);
             vTaskDelay(pdMS_TO_TICKS(10));
             MCP4728_SetVoltage_InternalVref(MCP4728_CHANNEL_B, set_voltage_ch1, false);
             // ESP_LOGD(TAG, "set_voltage_ch0: %.2f V, ch1: %.2f V\n", set_voltage_ch0, set_voltage_ch1);
 
-            // 6. 주행 상태 업데이트
+            // 주행 상태 업데이트
             // 출력값이 2.5V(중립)와 거의 같으면 정지 상태로 간주
             if (fabs(set_voltage_ch0 - 2.5f) < 0.01f && fabs(set_voltage_ch1 - 2.5f) < 0.01f) {
                 g_is_driving = false;
@@ -1064,94 +1075,99 @@ void md750t_ctrl_task(void *arg) {
         // 100ms loop, Z_Axis Linear Actuator Task (Automatic Position Control)
         if (current_read_time - last_z_pos_error_correction_time > 100) {
             last_z_pos_error_correction_time = current_read_time;
-            if ((g_z_pos_cmd_status == MOVE_UP || g_z_pos_cmd_status == MOVE_DN) && (g_z_pos_mm < 528.0f || g_z_pos_mm > 920.0f)) {
-                RosCommand_t stop_cmd = {0x10, 0, 0};
-                if (xQueueSendToFront(g_ros_cmd_queue, &stop_cmd, 0) == pdPASS) {
-                    ESP_LOGW(TAG, "Z-Axis LIMIT REACHED! Inserting STOP command to front of queue.");
-                }
-            }
 
-            z_pos_error = g_z_pos_target - g_z_pos_mm;
-
-            if (g_z_pos_cmd_status == MOVE_UP && g_z_pos_target != 0.0f) {
-                ESP_LOGD(TAG, "Z_UP Target: %.2f mm, Current: %.2f mm, Error: %.2f mm", g_z_pos_target, g_z_pos_mm, z_pos_error);
-                if (z_pos_error >= 100.0f) { 
-                    L298N_PWM_Set_Speed_M1(400); 
-                } else if (z_pos_error < 100.0f && z_pos_error >= 40.0f) { 
-                    L298N_PWM_Set_Speed_M1(400); 
-                } else if (z_pos_error < 40.0f && z_pos_error >= 20.0f) { 
-                    L298N_PWM_Set_Speed_M1(300); 
-                } else if (z_pos_error < 20.0f && z_pos_error >= 10.0f) { 
-                    L298N_PWM_Set_Speed_M1(200); 
-                } else if (z_pos_error < 10.0f && z_pos_error >= 5.0f) { 
-                    if (g_z_pos_mm < 600.0f) {
-                        L298N_PWM_Set_Speed_M1(200); 
-                    } else if (g_z_pos_mm >= 600.0f && g_z_pos_mm < 700.0f) {
-                        L298N_PWM_Set_Speed_M1(180); 
-                    } else if (g_z_pos_mm >= 700.0f) {
-                        L298N_PWM_Set_Speed_M1(150); 
+            // EMO 상태 시 자동 제어 건너뛰기
+            if (!g_estop_state) {
+                
+                if ((g_z_pos_cmd_status == MOVE_UP || g_z_pos_cmd_status == MOVE_DN) && (g_z_pos_mm < 528.0f || g_z_pos_mm > 920.0f)) {
+                    RosCommand_t stop_cmd = {0x10, 0, 0};
+                    if (xQueueSendToFront(g_ros_cmd_queue, &stop_cmd, 0) == pdPASS) {
+                        ESP_LOGW(TAG, "Z-Axis LIMIT REACHED! Inserting STOP command to front of queue.");
                     }
-                } else if (z_pos_error <= 0.0f) {
-                    L298N_PWM_Set_Speed_M1(0);
-                    RosCommand_t stop_cmd = {0x10, 0, 0};
-                    xQueueSendToFront(g_ros_cmd_queue, &stop_cmd, 0);
-                    ESP_LOGD(TAG, "MOVE_UP Auto STOP ... ");
                 }
-            }
-            if (g_z_pos_cmd_status == MOVE_DN && g_z_pos_target != 0.0f) {
-                ESP_LOGD(TAG, "Z_DN Target: %.2f mm, Current: %.2f mm, Error: %.2f mm", g_z_pos_target, g_z_pos_mm, z_pos_error);
-                if (z_pos_error <= -100.0f) { 
-                    if (g_z_pos_mm < 650.0f) L298N_PWM_Set_Speed_M1(50);
-                    else if (g_load1_detected == true || g_load2_detected == true) L298N_PWM_Set_Speed_M1(200);
-                    else L298N_PWM_Set_Speed_M1(400); 
-                } else if (z_pos_error > -100.0f && z_pos_error <= -40.0f) { 
-                    if (g_z_pos_mm < 650.0f) L298N_PWM_Set_Speed_M1(50);
-                    else if (g_load1_detected == true || g_load2_detected == true) L298N_PWM_Set_Speed_M1(150);
-                    else L298N_PWM_Set_Speed_M1(300); 
-                } else if (z_pos_error > -40.0f && z_pos_error <= -30.0f) { 
-                    if (g_z_pos_mm < 650.0f) L298N_PWM_Set_Speed_M1(50);
-                    else if (g_load1_detected == true || g_load2_detected == true) L298N_PWM_Set_Speed_M1(100);
-                    else L298N_PWM_Set_Speed_M1(200); 
-                } else if (z_pos_error > -30.0f && z_pos_error <= -20.0f) { 
-                    if (g_z_pos_mm < 650.0f) L298N_PWM_Set_Speed_M1(50);
-                    else if (g_load1_detected == true || g_load2_detected == true) L298N_PWM_Set_Speed_M1(80);
-                    else L298N_PWM_Set_Speed_M1(100); 
-                } else if (z_pos_error > -20.0f && z_pos_error <= -10.0f) { 
-                    L298N_PWM_Set_Speed_M1(80); 
-                } else if (z_pos_error > -10.0f && z_pos_error <= -5.0f) { 
-                    L298N_PWM_Set_Speed_M1(50); 
-                } else if (z_pos_error >= 0.0f) {
-                    L298N_PWM_Set_Speed_M1(0);
-                // X축 후진시에는 아무것도 안함 (Linear Actuator 내부 리미트 센서에 의해 정지)
-                    RosCommand_t stop_cmd = {0x10, 0, 0};
-                    xQueueSendToFront(g_ros_cmd_queue, &stop_cmd, 0);
-                    ESP_LOGD(TAG, "MOVE_DN Auto STOP ... ");
-                }
-            }
 
-            // Z축 높이 보상 로직 (중량물 적재시 Z축 처짐 보상)
-            static float z_err_compensation = 0.0f;
-            // if (g_is_driving == false && g_emlock_on_state == true && g_docking_complete == true) {  // 보상로직적용 조건 추가
-            if (g_z_pos_cmd_status == MOVE_STOP && g_is_driving == false) {
-                if (z_pos_error > 1.5f) {
-                    ESP_LOGW(TAG, "Z-Axis Sagging Detected! Target: %.2f mm, Current: %.2f mm, Error: %.2f mm", g_z_pos_target, g_z_pos_mm, z_pos_error);
-                    // 보상로직으로 Z축을 상승시키는 명령을 추가해서 중력을 극복하는 힘을 가해 주어야 함.
-                    ESP_LOGD(TAG, "Z_UP for Anti-Sagging  ... ");
-                    z_err_compensation += 10.0f; // 보상 속도 (실험적으로 조정 필요)
+                z_pos_error = g_z_pos_target - g_z_pos_mm;
 
-                    pcf8574_read_byte(PCF8574_ADDR_0x27, &input_27);
-                    input_27 = (input_27 | 0x04) & ~0x01;
-                    pcf8574_write_byte(PCF8574_ADDR_0x27, input_27);
-                    L298N_PWM_Set_Speed_M1(z_err_compensation);  
-                } else {
-                    if (z_err_compensation != 0.0f) {                    
-                        z_err_compensation = 0.0f; // 초기값으로 리셋
-                        ESP_LOGD(TAG, "Resetting Z-Axis Compensation ... ");
+                if (g_z_pos_cmd_status == MOVE_UP && g_z_pos_target != 0.0f) {
+                    ESP_LOGD(TAG, "Z_UP Target: %.2f mm, Current: %.2f mm, Error: %.2f mm", g_z_pos_target, g_z_pos_mm, z_pos_error);
+                    if (z_pos_error >= 100.0f) { 
+                        L298N_PWM_Set_Speed_M1(400); 
+                    } else if (z_pos_error < 100.0f && z_pos_error >= 40.0f) { 
+                        L298N_PWM_Set_Speed_M1(400); 
+                    } else if (z_pos_error < 40.0f && z_pos_error >= 20.0f) { 
+                        L298N_PWM_Set_Speed_M1(300); 
+                    } else if (z_pos_error < 20.0f && z_pos_error >= 10.0f) { 
+                        L298N_PWM_Set_Speed_M1(200); 
+                    } else if (z_pos_error < 10.0f && z_pos_error >= 5.0f) { 
+                        if (g_z_pos_mm < 600.0f) {
+                            L298N_PWM_Set_Speed_M1(200); 
+                        } else if (g_z_pos_mm >= 600.0f && g_z_pos_mm < 700.0f) {
+                            L298N_PWM_Set_Speed_M1(180); 
+                        } else if (g_z_pos_mm >= 700.0f) {
+                            L298N_PWM_Set_Speed_M1(150); 
+                        }
+                    } else if (z_pos_error <= 0.0f) {
                         L298N_PWM_Set_Speed_M1(0);
+                        RosCommand_t stop_cmd = {0x10, 0, 0};
+                        xQueueSendToFront(g_ros_cmd_queue, &stop_cmd, 0);
+                        ESP_LOGD(TAG, "MOVE_UP Auto STOP ... ");
+                    }
+                }
+                if (g_z_pos_cmd_status == MOVE_DN && g_z_pos_target != 0.0f) {
+                    ESP_LOGD(TAG, "Z_DN Target: %.2f mm, Current: %.2f mm, Error: %.2f mm", g_z_pos_target, g_z_pos_mm, z_pos_error);
+                    if (z_pos_error <= -100.0f) { 
+                        if (g_z_pos_mm < 650.0f) L298N_PWM_Set_Speed_M1(50);
+                        else if (g_load1_detected == true || g_load2_detected == true) L298N_PWM_Set_Speed_M1(200);
+                        else L298N_PWM_Set_Speed_M1(400); 
+                    } else if (z_pos_error > -100.0f && z_pos_error <= -40.0f) { 
+                        if (g_z_pos_mm < 650.0f) L298N_PWM_Set_Speed_M1(50);
+                        else if (g_load1_detected == true || g_load2_detected == true) L298N_PWM_Set_Speed_M1(150);
+                        else L298N_PWM_Set_Speed_M1(300); 
+                    } else if (z_pos_error > -40.0f && z_pos_error <= -30.0f) { 
+                        if (g_z_pos_mm < 650.0f) L298N_PWM_Set_Speed_M1(50);
+                        else if (g_load1_detected == true || g_load2_detected == true) L298N_PWM_Set_Speed_M1(100);
+                        else L298N_PWM_Set_Speed_M1(200); 
+                    } else if (z_pos_error > -30.0f && z_pos_error <= -20.0f) { 
+                        if (g_z_pos_mm < 650.0f) L298N_PWM_Set_Speed_M1(50);
+                        else if (g_load1_detected == true || g_load2_detected == true) L298N_PWM_Set_Speed_M1(80);
+                        else L298N_PWM_Set_Speed_M1(100); 
+                    } else if (z_pos_error > -20.0f && z_pos_error <= -10.0f) { 
+                        L298N_PWM_Set_Speed_M1(80); 
+                    } else if (z_pos_error > -10.0f && z_pos_error <= -5.0f) { 
+                        L298N_PWM_Set_Speed_M1(50); 
+                    } else if (z_pos_error >= 0.0f) {
+                        L298N_PWM_Set_Speed_M1(0);
+                    // X축 후진시에는 아무것도 안함 (Linear Actuator 내부 리미트 센서에 의해 정지)
+                        RosCommand_t stop_cmd = {0x10, 0, 0};
+                        xQueueSendToFront(g_ros_cmd_queue, &stop_cmd, 0);
+                        ESP_LOGD(TAG, "MOVE_DN Auto STOP ... ");
+                    }
+                }
+
+                // Z축 높이 보상 로직 (중량물 적재시 Z축 처짐 보상)
+                static float z_err_compensation = 0.0f;
+                // if (g_is_driving == false && g_emlock_on_state == true && g_docking_complete == true) {  // 보상로직적용 조건 추가
+                if (g_z_pos_cmd_status == MOVE_STOP && g_is_driving == false) {
+                    if (z_pos_error > 1.5f) {
+                        ESP_LOGW(TAG, "Z-Axis Sagging Detected! Target: %.2f mm, Current: %.2f mm, Error: %.2f mm", g_z_pos_target, g_z_pos_mm, z_pos_error);
+                        // 보상로직으로 Z축을 상승시키는 명령을 추가해서 중력을 극복하는 힘을 가해 주어야 함.
+                        ESP_LOGD(TAG, "Z_UP for Anti-Sagging  ... ");
+                        z_err_compensation += 10.0f; // 보상 속도 (실험적으로 조정 필요)
+
                         pcf8574_read_byte(PCF8574_ADDR_0x27, &input_27);
-                        input_27 = (input_27 & ~0x01) & ~0x04;
+                        input_27 = (input_27 | 0x04) & ~0x01;
                         pcf8574_write_byte(PCF8574_ADDR_0x27, input_27);
-                        ESP_LOGD(TAG, "MOVE_UP Auto STOP ... ");                    
+                        L298N_PWM_Set_Speed_M1(z_err_compensation);  
+                    } else {
+                        if (z_err_compensation != 0.0f) {                    
+                            z_err_compensation = 0.0f; // 초기값으로 리셋
+                            ESP_LOGD(TAG, "Resetting Z-Axis Compensation ... ");
+                            L298N_PWM_Set_Speed_M1(0);
+                            pcf8574_read_byte(PCF8574_ADDR_0x27, &input_27);
+                            input_27 = (input_27 & ~0x01) & ~0x04;
+                            pcf8574_write_byte(PCF8574_ADDR_0x27, input_27);
+                            ESP_LOGD(TAG, "MOVE_UP Auto STOP ... ");                    
+                        }
                     }
                 }
             }
@@ -1161,39 +1177,41 @@ void md750t_ctrl_task(void *arg) {
         if (current_read_time - last_x_pos_error_correction_time > 100) {
             last_x_pos_error_correction_time = current_read_time;
 
-            x_pos_error = g_x_pos_target - g_x_pos_mm;
+            if (!g_estop_state) {
+                x_pos_error = g_x_pos_target - g_x_pos_mm;
 
-            // X축 전진 Limit (MOVE_UP): 현재 위치가 증가하여 목표에 도달하는 상황 (소프트웨어 전진 리미트)
-            if (g_x_pos_cmd_status == MOVE_UP && g_x_pos_target != 0.0f) {
-                ESP_LOGD(TAG, "X_FWD Target: %.2f mm, Current: %.2f mm, Error: %.2f mm", g_x_pos_target, g_x_pos_mm, x_pos_error);
-                
-                // 에러가 양수에서 점점 0으로 줄어듦
-                if (x_pos_error >= 30.0f) {
-                    L298N_PWM_Set_Speed_M2(400); // 원래 목표 속도 유지
-                } else if (x_pos_error < 30.0f && x_pos_error > 5.0f) {
-                    // 목적지 30mm 이내 접근 시 감속 (최대 PWM 150으로 제한)
-                    L298N_PWM_Set_Speed_M2(150);
-                } else if (x_pos_error <= 0.0f) {
-                    // 목적지 도달 시 즉시 정지 및 큐에 STOP 명령 삽입
-                    L298N_PWM_Set_Speed_M2(0);
-                    RosCommand_t stop_cmd = {0x30, 0, 0};
-                    xQueueSendToFront(g_ros_cmd_queue, &stop_cmd, 0); 
-                    ESP_LOGD(TAG, "MOVE_UP(X_FWD) Auto STOP - Target Reached");
+                // X축 전진 Limit (MOVE_UP): 현재 위치가 증가하여 목표에 도달하는 상황 (소프트웨어 전진 리미트)
+                if (g_x_pos_cmd_status == MOVE_UP && g_x_pos_target != 0.0f) {
+                    ESP_LOGD(TAG, "X_FWD Target: %.2f mm, Current: %.2f mm, Error: %.2f mm", g_x_pos_target, g_x_pos_mm, x_pos_error);
+                    
+                    // 에러가 양수에서 점점 0으로 줄어듦
+                    if (x_pos_error >= 30.0f) {
+                        L298N_PWM_Set_Speed_M2(400); // 원래 목표 속도 유지
+                    } else if (x_pos_error < 30.0f && x_pos_error > 5.0f) {
+                        // 목적지 30mm 이내 접근 시 감속 (최대 PWM 150으로 제한)
+                        L298N_PWM_Set_Speed_M2(150);
+                    } else if (x_pos_error <= 0.0f) {
+                        // 목적지 도달 시 즉시 정지 및 큐에 STOP 명령 삽입
+                        L298N_PWM_Set_Speed_M2(0);
+                        RosCommand_t stop_cmd = {0x30, 0, 0};
+                        xQueueSendToFront(g_ros_cmd_queue, &stop_cmd, 0); 
+                        ESP_LOGD(TAG, "MOVE_UP(X_FWD) Auto STOP - Target Reached");
+                    }
                 }
-            }
 
-            // X축 후진 (MOVE_DN) - Soft Homing 로직
-            if (g_x_pos_cmd_status == MOVE_DN) {                
-                // 원점(0mm)에 30mm 이내로 접근했는지 확인
-                if (g_x_pos_mm > 30.0f) {
-                    L298N_PWM_Set_Speed_M2(400); // 멀리 있을 때는 최고 속도로 복귀
-                } else {
-                    L298N_PWM_Set_Speed_M2(150); // 30mm 이내 접근 시 부드럽게 감속 (Soft Landing)
+                // X축 후진 (MOVE_DN) - Soft Homing 로직
+                if (g_x_pos_cmd_status == MOVE_DN) {                
+                    // 원점(0mm)에 30mm 이내로 접근했는지 확인
+                    if (g_x_pos_mm > 30.0f) {
+                        L298N_PWM_Set_Speed_M2(400); // 멀리 있을 때는 최고 속도로 복귀
+                    } else {
+                        L298N_PWM_Set_Speed_M2(150); // 30mm 이내 접근 시 부드럽게 감속 (Soft Landing)
+                    }
+                    
+                    // [주의] 여기서 소프트웨어적으로 L298N_PWM_Set_Speed_M2(0)를 호출하여 멈추지 않습니다!
+                    // 물리적 한계점(끝단)에 부딪힐 때까지 저속(PWM 150)으로 계속 밀어붙이도록 둡니다.
+                    // 최종 정지 및 g_x_pos_mm = 0.0f 초기화는 hall_sensor_task의 Stall 감지가 담당합니다.
                 }
-                
-                // [주의] 여기서 소프트웨어적으로 L298N_PWM_Set_Speed_M2(0)를 호출하여 멈추지 않습니다!
-                // 물리적 한계점(끝단)에 부딪힐 때까지 저속(PWM 150)으로 계속 밀어붙이도록 둡니다.
-                // 최종 정지 및 g_x_pos_mm = 0.0f 초기화는 hall_sensor_task의 Stall 감지가 담당합니다.
             }
         }
         
