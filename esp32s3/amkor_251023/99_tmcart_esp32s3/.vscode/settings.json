@@ -11,5 +11,5 @@
     "uros_network_interfaces.h": "c",
     "rmw_microros.h": "c"
   },
-  "idf.currentSetup": "/home/temaat/esp/esp-idf"
+  "idf.currentSetup": "/home/yoonki/esp/esp-idf"
 }

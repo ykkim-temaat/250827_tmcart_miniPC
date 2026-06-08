@@ -79,7 +79,7 @@ static rcl_init_options_t init_options;
 
 // ===========================================================
 static const char *TAG = "MAIN";
-static const char *FIRMWARE_VERSION = "deploy2_v1.1.6_260608; EMO동작 무조건 멈춤";
+static const char *FIRMWARE_VERSION = "deploy2_v1.1.5_260608; X축 리미트 설정";
 
 typedef enum {
     CPU_NUM_0 = 0,

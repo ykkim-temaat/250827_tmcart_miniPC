@@ -79,7 +79,7 @@ static rcl_init_options_t init_options;
 
 // ===========================================================
 static const char *TAG = "MAIN";
-static const char *FIRMWARE_VERSION = "deploy2_v1.1.6_260608; EMO동작 무조건 멈춤";
+static const char *FIRMWARE_VERSION = "deploy2_v1.1.4_260605; 주행 딜레이 짧게 변경";
 
 typedef enum {
     CPU_NUM_0 = 0,
@@ -487,13 +487,11 @@ void md750t_ctrl_task(void *arg) {
     bool over_charge_state_mode = false;    // 29.2V 이상 충전금지 모드
 
     float z_pos_error = 0.0f;
-    float x_pos_error = 0.0f;
     
     // last_actuator_time은 큐 방식으로 인해 더 이상 필요 없음 ---
     // unsigned long last_actuator_time = 0;
     unsigned long last_loadcell_time = 0;
-    unsigned long last_z_pos_error_correction_time = 0;
-    unsigned long last_x_pos_error_correction_time = 0;
+    unsigned long last_z_pos_error_correction_time = 0;      
     // unsigned long last_pushbutton_time = 0; 
     unsigned long last_ext_din_time = 0;
     // unsigned long last_guide_laser_time = 0;
@@ -728,7 +726,6 @@ void md750t_ctrl_task(void *arg) {
                 input_27 = (input_27 & ~0x02) & ~0x08;
                 pcf8574_write_byte(PCF8574_ADDR_0x27, input_27);
                 ESP_LOGD(TAG, "X_STOP (Move Stop) ... ");
-                x_pos_error = 0.0f;
                 g_x_pos_cmd_status = MOVE_STOP;
                 g_x_axis_moving = false; // 상태 업데이트
             } else if (received_cmd.cmd == 0x31 && curr_ros_cmd != 0x31) {
@@ -737,9 +734,8 @@ void md750t_ctrl_task(void *arg) {
                 input_27 = (input_27 | 0x02) & ~0x08;
                 pcf8574_write_byte(PCF8574_ADDR_0x27, input_27);
                 ESP_LOGD(TAG, "X_Move Forward ... ");
-                L298N_PWM_Set_Speed_M2(received_cmd.val1);
-                g_x_pos_target = received_cmd.val2; // 전진시 이 값이상은 전진하지 못하도록 Limit로 활용
-                x_pos_error = g_x_pos_target - g_x_pos_mm;  // 전진시 에러값은 양수
+                // L298N_PWM_Set_Speed_M2(received_cmd.val1);
+                L298N_PWM_Set_Speed_M2(400);
                 g_x_pos_cmd_status = MOVE_UP;
                 g_x_axis_moving = true; // 상태 업데이트
             } else if (received_cmd.cmd == 0x32 && curr_ros_cmd != 0x32) {
@@ -749,9 +745,7 @@ void md750t_ctrl_task(void *arg) {
                 pcf8574_write_byte(PCF8574_ADDR_0x27, input_27);
                 ESP_LOGD(TAG, "X_Move Backward ... ");
                 // L298N_PWM_Set_Speed_M2(received_cmd.val1);
-                L298N_PWM_Set_Speed_M2(400); // 최고속도로 원점까지 후진
-                g_x_pos_target = 0.0f;  // 후진시 목표지점은 무조건 0mm
-                x_pos_error = g_x_pos_target - g_x_pos_mm;  // 후진시 에러값은 음수
+                L298N_PWM_Set_Speed_M2(400);
                 g_x_pos_cmd_status = MOVE_DN;
                 g_x_axis_moving = true; // 상태 업데이트
             }
@@ -1122,7 +1116,6 @@ void md750t_ctrl_task(void *arg) {
                     L298N_PWM_Set_Speed_M1(50); 
                 } else if (z_pos_error >= 0.0f) {
                     L298N_PWM_Set_Speed_M1(0);
-                // X축 후진시에는 아무것도 안함 (Linear Actuator 내부 리미트 센서에 의해 정지)
                     RosCommand_t stop_cmd = {0x10, 0, 0};
                     xQueueSendToFront(g_ros_cmd_queue, &stop_cmd, 0);
                     ESP_LOGD(TAG, "MOVE_DN Auto STOP ... ");
@@ -1154,46 +1147,6 @@ void md750t_ctrl_task(void *arg) {
                         ESP_LOGD(TAG, "MOVE_UP Auto STOP ... ");                    
                     }
                 }
-            }
-        }
-
-        // 100ms loop, X_Axis Linear Actuator Task (X Position Limit Control)
-        if (current_read_time - last_x_pos_error_correction_time > 100) {
-            last_x_pos_error_correction_time = current_read_time;
-
-            x_pos_error = g_x_pos_target - g_x_pos_mm;
-
-            // X축 전진 Limit (MOVE_UP): 현재 위치가 증가하여 목표에 도달하는 상황 (소프트웨어 전진 리미트)
-            if (g_x_pos_cmd_status == MOVE_UP && g_x_pos_target != 0.0f) {
-                ESP_LOGD(TAG, "X_FWD Target: %.2f mm, Current: %.2f mm, Error: %.2f mm", g_x_pos_target, g_x_pos_mm, x_pos_error);
-                
-                // 에러가 양수에서 점점 0으로 줄어듦
-                if (x_pos_error >= 30.0f) {
-                    L298N_PWM_Set_Speed_M2(400); // 원래 목표 속도 유지
-                } else if (x_pos_error < 30.0f && x_pos_error > 5.0f) {
-                    // 목적지 30mm 이내 접근 시 감속 (최대 PWM 150으로 제한)
-                    L298N_PWM_Set_Speed_M2(150);
-                } else if (x_pos_error <= 0.0f) {
-                    // 목적지 도달 시 즉시 정지 및 큐에 STOP 명령 삽입
-                    L298N_PWM_Set_Speed_M2(0);
-                    RosCommand_t stop_cmd = {0x30, 0, 0};
-                    xQueueSendToFront(g_ros_cmd_queue, &stop_cmd, 0); 
-                    ESP_LOGD(TAG, "MOVE_UP(X_FWD) Auto STOP - Target Reached");
-                }
-            }
-
-            // X축 후진 (MOVE_DN) - Soft Homing 로직
-            if (g_x_pos_cmd_status == MOVE_DN) {                
-                // 원점(0mm)에 30mm 이내로 접근했는지 확인
-                if (g_x_pos_mm > 30.0f) {
-                    L298N_PWM_Set_Speed_M2(400); // 멀리 있을 때는 최고 속도로 복귀
-                } else {
-                    L298N_PWM_Set_Speed_M2(150); // 30mm 이내 접근 시 부드럽게 감속 (Soft Landing)
-                }
-                
-                // [주의] 여기서 소프트웨어적으로 L298N_PWM_Set_Speed_M2(0)를 호출하여 멈추지 않습니다!
-                // 물리적 한계점(끝단)에 부딪힐 때까지 저속(PWM 150)으로 계속 밀어붙이도록 둡니다.
-                // 최종 정지 및 g_x_pos_mm = 0.0f 초기화는 hall_sensor_task의 Stall 감지가 담당합니다.
             }
         }
         
