@@ -79,7 +79,7 @@ static rcl_init_options_t init_options;
 
 // ===========================================================
 static const char *TAG = "MAIN";
-static const char *FIRMWARE_VERSION = "deploy2_v1.1.6_260608; EMO동작 무조건 멈춤";
+static const char *FIRMWARE_VERSION = "deploy2_v1.1.7_260609; 후진 주행개선";
 
 typedef enum {
     CPU_NUM_0 = 0,
@@ -885,7 +885,7 @@ void md750t_ctrl_task(void *arg) {
 
             // static const float DEADZONE_LOW = 2.25f; // Deadzone 하한
             static const float DEADZONE_LOW = 2.21f; // Deadzone 하한
-            static const float DEADZONE_HIGH = 2.75f; // Deadzone 상한
+            static const float DEADZONE_HIGH = 2.79f; // Deadzone 상한
 
             if (diff_ch0 > diff_step) {
                 // 반응하지 않는 구간 건너뛰기 (2.2V ~ 2.5V, 2.5V ~ 2.8V)
@@ -965,12 +965,12 @@ void md750t_ctrl_task(void *arg) {
             }  
 
             // 후진속도 제한
-            if (set_voltage_ch0 > 2.81) {
-                set_voltage_ch0 = 2.81f;
+            if (set_voltage_ch0 > 2.80f) {
+                set_voltage_ch0 = 2.80f;
                 ESP_LOGI(TAG, "set_voltage_ch0 limited to 2.81f V");
             }
-            if (set_voltage_ch1 > 2.81) {
-                set_voltage_ch1 = 2.81f;
+            if (set_voltage_ch1 > 2.80f) {
+                set_voltage_ch1 = 2.80f;
                 ESP_LOGI(TAG, "set_voltage_ch1 limited to 2.81f V");
             }            
 
@@ -978,31 +978,31 @@ void md750t_ctrl_task(void *arg) {
 
             // Slow drive Mode 1 (Push-button)
             if (slow_drive_left_cnt > 0 && slow_drive_right_cnt > 0) { 
-                if (set_voltage_ch0 < 2.2f || set_voltage_ch1 < 2.2f) {
+                if (set_voltage_ch0 < 2.20f || set_voltage_ch1 < 2.20f) {
                     set_voltage_ch0 = 2.19f;
                     set_voltage_ch1 = 2.19f;
                     ESP_LOGI(TAG, "Slow Drive Mode: FWD limited to 2.19f V");
-                } else if (set_voltage_ch0 > 2.8f || set_voltage_ch1 > 2.8f) {
-                    set_voltage_ch0 = 2.81f;
-                    set_voltage_ch1 = 2.81f;
+                } else if (set_voltage_ch0 > 2.80f || set_voltage_ch1 > 2.80f) {
+                    set_voltage_ch0 = 2.80f;
+                    set_voltage_ch1 = 2.80f;
                     ESP_LOGI(TAG, "Slow Drive Mode: BACK limited to 2.81f V");
                 }
             }
 
             // Slow drive Mode 2 (RFID) 
             if (twist_mode == true) { 
-                if (set_voltage_ch0 < 2.2f) {
+                if (set_voltage_ch0 < 2.20f) {
                     set_voltage_ch0 = 2.19f;
                     ESP_LOGI(TAG, "Twist Mode: LEFT FWD limited to 2.19f V");
-                } else if (set_voltage_ch0 > 2.8f) {
-                    set_voltage_ch0 = 2.81f;
+                } else if (set_voltage_ch0 > 2.80f) {
+                    set_voltage_ch0 = 2.80f;
                     ESP_LOGI(TAG, "Twist Mode: LEFT BACK limited to 2.81f V");
                 }
-                if (set_voltage_ch1 < 2.2f) {
+                if (set_voltage_ch1 < 2.20f) {
                     set_voltage_ch1 = 2.19f;
                     ESP_LOGI(TAG, "Twist Mode: RIGHT FWD limited to 2.19f V");
-                } else if (set_voltage_ch1 > 2.8f) {
-                    set_voltage_ch1 = 2.81f;
+                } else if (set_voltage_ch1 > 2.80f) {
+                    set_voltage_ch1 = 2.80f;
                     ESP_LOGI(TAG, "Twist Mode: RIGHT BACK limited to 2.81f V");
                 }
             }
