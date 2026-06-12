@@ -79,7 +79,7 @@ static rcl_init_options_t init_options;
 
 // ===========================================================
 static const char *TAG = "MAIN";
-static const char *FIRMWARE_VERSION = "deploy2_v1.1.7_260609; 후진 주행개선";
+static const char *FIRMWARE_VERSION = "deploy2_v1.1.8_260612; 주행개선";
 
 typedef enum {
     CPU_NUM_0 = 0,
@@ -885,7 +885,7 @@ void md750t_ctrl_task(void *arg) {
 
             // static const float DEADZONE_LOW = 2.25f; // Deadzone 하한
             static const float DEADZONE_LOW = 2.21f; // Deadzone 하한
-            static const float DEADZONE_HIGH = 2.79f; // Deadzone 상한
+            static const float DEADZONE_HIGH = 2.78f; // Deadzone 상한
 
             if (diff_ch0 > diff_step) {
                 // 반응하지 않는 구간 건너뛰기 (2.2V ~ 2.5V, 2.5V ~ 2.8V)
@@ -947,7 +947,7 @@ void md750t_ctrl_task(void *arg) {
             // ESP_LOGD(TAG, "set_voltage_ch0: %.2f V, ch1: %.2f V", set_voltage_ch0, set_voltage_ch1);
 
             // 전진속도 제한
-            if (set_voltage_ch0 < 2.19f || set_voltage_ch1 < 2.19f) {
+            if (set_voltage_ch0 < 2.20f || set_voltage_ch1 < 2.20f) {
                 float set_voltage_tmp = (set_voltage_ch0 + set_voltage_ch1) / 2.0f; 
                 set_voltage_ch0 = set_voltage_tmp;
                 set_voltage_ch1 = set_voltage_tmp;
@@ -955,34 +955,34 @@ void md750t_ctrl_task(void *arg) {
             }
 
             // 전진속도 제한
-            if (set_voltage_ch0 < 2.15) {
+            if (set_voltage_ch0 <= 2.15f) {
                 set_voltage_ch0 = 2.15f;
                 ESP_LOGI(TAG, "set_voltage_ch0 limited to 2.15f V");
             }
-            if (set_voltage_ch1 < 2.15) {
+            if (set_voltage_ch1 <= 2.15f) {
                 set_voltage_ch1 = 2.15f;
                 ESP_LOGI(TAG, "set_voltage_ch1 limited to 2.15f V");
             }  
 
             // 후진속도 제한
-            if (set_voltage_ch0 > 2.80f) {
+            if (set_voltage_ch0 >= 2.80f) {
                 set_voltage_ch0 = 2.80f;
-                ESP_LOGI(TAG, "set_voltage_ch0 limited to 2.81f V");
+                ESP_LOGI(TAG, "set_voltage_ch0 limited to 2.80f V");
             }
-            if (set_voltage_ch1 > 2.80f) {
+            if (set_voltage_ch1 >= 2.80f) {
                 set_voltage_ch1 = 2.80f;
-                ESP_LOGI(TAG, "set_voltage_ch1 limited to 2.81f V");
+                ESP_LOGI(TAG, "set_voltage_ch1 limited to 2.80f V");
             }            
 
             // ESP_LOGD(TAG, "set_voltage_ch0: %.2f V, ch1: %.2f V\n", set_voltage_ch0, set_voltage_ch1);
 
             // Slow drive Mode 1 (Push-button)
             if (slow_drive_left_cnt > 0 && slow_drive_right_cnt > 0) { 
-                if (set_voltage_ch0 < 2.20f || set_voltage_ch1 < 2.20f) {
-                    set_voltage_ch0 = 2.19f;
-                    set_voltage_ch1 = 2.19f;
+                if (set_voltage_ch0 <= 2.20f || set_voltage_ch1 <= 2.20f) {
+                    set_voltage_ch0 = 2.20f;
+                    set_voltage_ch1 = 2.20f;
                     ESP_LOGI(TAG, "Slow Drive Mode: FWD limited to 2.19f V");
-                } else if (set_voltage_ch0 > 2.80f || set_voltage_ch1 > 2.80f) {
+                } else if (set_voltage_ch0 >= 2.80f || set_voltage_ch1 >= 2.80f) {
                     set_voltage_ch0 = 2.80f;
                     set_voltage_ch1 = 2.80f;
                     ESP_LOGI(TAG, "Slow Drive Mode: BACK limited to 2.81f V");
@@ -991,17 +991,17 @@ void md750t_ctrl_task(void *arg) {
 
             // Slow drive Mode 2 (RFID) 
             if (twist_mode == true) { 
-                if (set_voltage_ch0 < 2.20f) {
-                    set_voltage_ch0 = 2.19f;
+                if (set_voltage_ch0 <= 2.20f) {
+                    set_voltage_ch0 = 2.20f;
                     ESP_LOGI(TAG, "Twist Mode: LEFT FWD limited to 2.19f V");
-                } else if (set_voltage_ch0 > 2.80f) {
+                } else if (set_voltage_ch0 >= 2.80f) {
                     set_voltage_ch0 = 2.80f;
                     ESP_LOGI(TAG, "Twist Mode: LEFT BACK limited to 2.81f V");
                 }
-                if (set_voltage_ch1 < 2.20f) {
-                    set_voltage_ch1 = 2.19f;
+                if (set_voltage_ch1 <= 2.20f) {
+                    set_voltage_ch1 = 2.20f;
                     ESP_LOGI(TAG, "Twist Mode: RIGHT FWD limited to 2.19f V");
-                } else if (set_voltage_ch1 > 2.80f) {
+                } else if (set_voltage_ch1 >= 2.80f) {
                     set_voltage_ch1 = 2.80f;
                     ESP_LOGI(TAG, "Twist Mode: RIGHT BACK limited to 2.81f V");
                 }
