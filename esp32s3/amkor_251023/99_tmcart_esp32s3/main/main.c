@@ -79,7 +79,7 @@ static rcl_init_options_t init_options;
 
 // ===========================================================
 static const char *TAG = "MAIN";
-static const char *FIRMWARE_VERSION = "deploy2_v1.1.8_260612; 주행개선";
+static const char *FIRMWARE_VERSION = "deploy2_v1.1.9_260616; 주행개선";
 
 typedef enum {
     CPU_NUM_0 = 0,
@@ -978,9 +978,9 @@ void md750t_ctrl_task(void *arg) {
 
             // Slow drive Mode 1 (Push-button)
             if (slow_drive_left_cnt > 0 && slow_drive_right_cnt > 0) { 
-                if (set_voltage_ch0 <= 2.20f || set_voltage_ch1 <= 2.20f) {
-                    set_voltage_ch0 = 2.20f;
-                    set_voltage_ch1 = 2.20f;
+                if (set_voltage_ch0 <= 2.205f || set_voltage_ch1 <= 2.205f) {
+                    set_voltage_ch0 = 2.201f;
+                    set_voltage_ch1 = 2.201f;
                     ESP_LOGI(TAG, "Slow Drive Mode: FWD limited to 2.19f V");
                 } else if (set_voltage_ch0 >= 2.80f || set_voltage_ch1 >= 2.80f) {
                     set_voltage_ch0 = 2.80f;
