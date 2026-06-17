@@ -79,7 +79,7 @@ static rcl_init_options_t init_options;
 
 // ===========================================================
 static const char *TAG = "MAIN";
-static const char *FIRMWARE_VERSION = "deploy2_v1.1.9_260616; 주행개선";
+static const char *FIRMWARE_VERSION = "deploy2_v1.2.0_260617; X축길이보정";
 
 typedef enum {
     CPU_NUM_0 = 0,
@@ -1537,7 +1537,8 @@ void linear_scale_task(void *arg)
 void hall_sensor_task(void *arg) {
     ESP_LOGI(TAG, "hall_sensor_task started. System is in normal operation.");
     unsigned long last_x_hall_read_time = 0;
-    float x_hall_factor = 0.106926; // mm per count
+    // float x_hall_factor = 0.106926; // mm per count
+    float x_hall_factor = 0.106926 * 1.484848; // mm per count
     Encoder_Init();
     float last_x_pos_mm = 0.0f;
 
